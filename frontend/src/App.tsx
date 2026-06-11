@@ -367,13 +367,10 @@ export default function App() {
                 {/* Machines panel */}
                 <div style={{ width: machinesWidth }} className="shrink-0 border-r border-slate-800 overflow-hidden flex flex-col">
                   <MachineSelector
-                    machines={machines}
-                    environments={environments}
                     inventories={inventories}
-                    selected={selectedMachine}
-                    envFilter={selectedEnv}
                     onSelect={setSelectedMachine}
                     onChanged={() => void load()}
+                    onHostsChange={(hosts) => setEphemeralHosts(hosts.join('\n'))}
                     disabled={isRunning}
                   />
                 </div>
@@ -408,7 +405,7 @@ export default function App() {
                         <div className="flex gap-2">
                           <select
                             value={selectedInventory}
-                            onChange={(e) => { setSelectedInventory(e.target.value); setEphemeralHosts('') }}
+                            onChange={(e) => { setSelectedInventory(e.target.value) }}
                             disabled={isRunning}
                             className="flex-1 bg-slate-800 border border-slate-600 text-slate-200 rounded-lg
                                        px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500
@@ -428,23 +425,14 @@ export default function App() {
                         </div>
                         {selectedInventoryObj?.is_ephemeral && (
                           <div className="flex flex-col gap-1">
-                            <label className="text-xs text-slate-400 flex items-center justify-between">
-                              <span>Hosts for this run</span>
-                              {ephemeralHosts && (
-                                <button onClick={() => setEphemeralHosts('')}
-                                  className="text-[10px] text-slate-600 hover:text-slate-400">clear</button>
-                              )}
-                            </label>
-                            <textarea
-                              value={ephemeralHosts}
-                              onChange={(e) => setEphemeralHosts(e.target.value)}
-                              disabled={isRunning}
-                              rows={3}
-                              placeholder={"server1.example.com\n192.168.1.10"}
-                              className="bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2
-                                         text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500
-                                         resize-none placeholder-slate-600 disabled:opacity-50"
-                            />
+                            <label className="text-xs text-slate-400">Hosts for this run (from import)</label>
+                            {ephemeralHostList.length > 0 ? (
+                              <div className="bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-400 max-h-20 overflow-y-auto">
+                                {ephemeralHostList.join('\n')}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500 italic">No hosts — enter hosts in the Import panel.</p>
+                            )}
                             {ephemeralHostList.length > 0 && (
                               <span className="text-[10px] text-slate-500">
                                 {ephemeralHostList.length} host{ephemeralHostList.length !== 1 ? 's' : ''} queued

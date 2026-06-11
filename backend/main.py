@@ -369,8 +369,107 @@ def delete_environment(env_id: str):
 
 
 # ─── Inventories ──────────────────────────────────────────────────────────────
-def _load_inventories():  return json.loads(INVENTORIES_FILE.read_text())
-def _save_inventories(i): INVENTORIES_FILE.write_text(json.dumps(i, indent=2))
+import re as _re_inv
+
+def _get_inventory_dir(env_id: str = "") -> Path:
+    """Return (and create) the ansible_inventory folder for an env (or _global)."""
+    if env_id:
+        folder = _get_env_folder(env_id)
+    else:
+        folder = "_global"
+    d = BASE_DIR / "envs" / folder / "ansible_inventory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def _sanitize_inv_filename(name: str) -> str:
+    safe = _re_inv.sub(r'[^a-zA-Z0-9_.-]', '_', name).strip('_')[:60]
+    return (safe or "inventory") + ".ini"
+
+def _unique_filename(name: str, env_id: str, exclude_id: str = "") -> str:
+    """Return a filename that doesn't collide with other inventories in the same env dir."""
+    metas = json.loads(INVENTORIES_FILE.read_text())
+    taken = {
+        m.get("filename") for m in metas
+        if m.get("environment_id") == env_id and m.get("id") != exclude_id and m.get("filename")
+    }
+    base = _sanitize_inv_filename(name)
+    stem, ext = base[:-4], ".ini"
+    candidate = base
+    n = 1
+    while candidate in taken:
+        candidate = f"{stem}_{n}{ext}"
+        n += 1
+    return candidate
+
+def _inv_file_path(meta: dict) -> Path:
+    return _get_inventory_dir(meta.get("environment_id") or "") / (meta.get("filename") or (meta["id"] + ".ini"))
+
+def _read_inv_content(meta: dict) -> str:
+    p = _inv_file_path(meta)
+    return p.read_text() if p.exists() else ""
+
+def _write_inv_content(meta: dict, content: str) -> None:
+    _inv_file_path(meta).write_text(content)
+
+def _build_full_inv(meta: dict) -> dict:
+    """Augment a metadata record with content/base_content read from disk."""
+    raw = _read_inv_content(meta)
+    entry = {k: v for k, v in meta.items() if k not in ("content", "base_content")}
+    if meta.get("is_ephemeral"):
+        entry["content"] = ""
+        entry["base_content"] = raw
+    else:
+        entry["content"] = raw
+        entry["base_content"] = ""
+    return entry
+
+def _load_inventory_meta() -> list[dict]:
+    return json.loads(INVENTORIES_FILE.read_text())
+
+def _save_inventory_meta(metas: list[dict]) -> None:
+    # Strip any stray inline content before writing
+    clean = [{k: v for k, v in m.items() if k not in ("content", "base_content")} for m in metas]
+    INVENTORIES_FILE.write_text(json.dumps(clean, indent=2))
+
+def _load_inventories() -> list[dict]:
+    """Load all inventories; auto-migrates legacy inline-content entries to files."""
+    metas = json.loads(INVENTORIES_FILE.read_text())
+    needs_save = False
+    taken: set[str] = {m.get("filename") for m in metas if m.get("filename")}  # type: ignore[misc]
+    for m in metas:
+        if not m.get("filename"):
+            # Legacy entry — assign a filename and migrate content to file
+            fname = _sanitize_inv_filename(m.get("name", m.get("id", "inventory")))
+            stem, ext = fname[:-4], ".ini"
+            candidate = fname
+            n = 1
+            while candidate in taken:
+                candidate = f"{stem}_{n}{ext}"
+                n += 1
+            m["filename"] = candidate
+            taken.add(candidate)
+            # Write inline content to file
+            inline = m.get("content") or m.get("base_content") or ""
+            _write_inv_content(m, inline)
+            needs_save = True
+        # Always strip inline content from the in-memory meta before returning
+    if needs_save:
+        _save_inventory_meta(metas)
+    return [_build_full_inv(m) for m in metas]
+
+def _save_inventories(invs: list[dict]) -> None:
+    """Legacy helper kept for callers that pass full objects; writes content to files."""
+    metas = []
+    for inv in invs:
+        content = inv.get("content") or inv.get("base_content") or ""
+        meta = {k: v for k, v in inv.items() if k not in ("content", "base_content")}
+        if not meta.get("filename"):
+            meta["filename"] = _unique_filename(meta.get("name", meta.get("id", "")),
+                                                meta.get("environment_id") or "",
+                                                meta.get("id", ""))
+        _write_inv_content(meta, content)
+        metas.append(meta)
+    _save_inventory_meta(metas)
 
 @app.get("/api/inventories")
 def get_inventories(env_id: str = ""):
@@ -381,22 +480,58 @@ def get_inventories(env_id: str = ""):
 
 @app.post("/api/inventories", status_code=201)
 def create_inventory(inv: AnsibleInventory):
-    invs = _load_inventories(); inv.id = str(uuid.uuid4()); invs.append(inv.model_dump())
-    _save_inventories(invs); return inv.model_dump()
+    metas = _load_inventory_meta()
+    inv.id = str(uuid.uuid4())
+    env_id = inv.environment_id or ""
+    filename = _unique_filename(inv.name, env_id)
+    meta = {k: v for k, v in inv.model_dump().items() if k not in ("content", "base_content")}
+    meta["filename"] = filename
+    content = inv.base_content if inv.is_ephemeral else inv.content
+    _write_inv_content(meta, content)
+    metas.append(meta)
+    _save_inventory_meta(metas)
+    return _build_full_inv(meta)
 
 @app.put("/api/inventories/{inv_id}")
 def update_inventory(inv_id: str, inv: AnsibleInventory):
-    invs = _load_inventories()
-    idx = next((i for i, x in enumerate(invs) if x["id"] == inv_id), None)
-    if idx is None: raise HTTPException(404, "Inventory not found")
-    inv.id = inv_id; invs[idx] = inv.model_dump(); _save_inventories(invs)
-    return inv.model_dump()
+    metas = _load_inventory_meta()
+    idx = next((i for i, x in enumerate(metas) if x["id"] == inv_id), None)
+    if idx is None:
+        raise HTTPException(404, "Inventory not found")
+    old_meta = metas[idx]
+    env_id = inv.environment_id or ""
+    # If name changed, rename file
+    new_filename = old_meta.get("filename") or _unique_filename(inv.name, env_id, inv_id)
+    if old_meta.get("name") != inv.name:
+        new_filename = _unique_filename(inv.name, env_id, inv_id)
+        old_path = _inv_file_path(old_meta)
+        new_meta_tmp = dict(old_meta)
+        new_meta_tmp["filename"] = new_filename
+        new_meta_tmp["environment_id"] = env_id
+        new_path = _inv_file_path(new_meta_tmp)
+        if old_path.exists() and old_path != new_path:
+            old_path.rename(new_path)
+    inv.id = inv_id
+    new_meta = {k: v for k, v in inv.model_dump().items() if k not in ("content", "base_content")}
+    new_meta["filename"] = new_filename
+    content = inv.base_content if inv.is_ephemeral else inv.content
+    _write_inv_content(new_meta, content)
+    metas[idx] = new_meta
+    _save_inventory_meta(metas)
+    return _build_full_inv(new_meta)
 
 @app.delete("/api/inventories/{inv_id}", status_code=204)
 def delete_inventory(inv_id: str):
-    invs = _load_inventories(); filtered = [x for x in invs if x["id"] != inv_id]
-    if len(filtered) == len(invs): raise HTTPException(404, "Inventory not found")
-    _save_inventories(filtered)
+    metas = _load_inventory_meta()
+    meta = next((m for m in metas if m["id"] == inv_id), None)
+    if meta is None:
+        raise HTTPException(404, "Inventory not found")
+    # Delete file
+    try:
+        _inv_file_path(meta).unlink(missing_ok=True)
+    except Exception:
+        pass
+    _save_inventory_meta([m for m in metas if m["id"] != inv_id])
 
 
 # ─── WireGuard ────────────────────────────────────────────────────────────────
