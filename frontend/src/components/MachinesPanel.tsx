@@ -123,7 +123,7 @@ export default function MachinesPanel({ environments, envId = '' }: Props) {
                       ) : t?.ok === false ? (
                         <span className="text-[10px] text-red-400 truncate max-w-[120px] block" title={t.error}>✕ {t.error}</span>
                       ) : t?.ok === null ? (
-                        <span className="text-[10px] text-slate-500">{t.message}</span>
+                        <span className="text-[10px] text-slate-500">{t.error}</span>
                       ) : (
                         <button
                           onClick={() => void handleTest(m)}

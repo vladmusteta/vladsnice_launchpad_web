@@ -27,7 +27,7 @@ function fmtDay(iso: string) {
 }
 
 // ── bar helpers ───────────────────────────────────────────────────────────────
-function Bar({ total, done, error, max, label }: {
+function Bar({ total, done: _done, error, max, label }: {
   total: number; done: number; error: number; max: number; label: string
 }) {
   const pct = max > 0 ? (total / max) * 100 : 0
