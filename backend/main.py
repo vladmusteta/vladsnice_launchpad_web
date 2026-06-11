@@ -826,13 +826,22 @@ async def _execute_local(run_id, machine, script_path, args, queue,
             local_inv = f.name
 
         is_playbook = script_path.suffix in {".yml", ".yaml"}
+        # --limit: apply host filter for non-ephemeral inventories when hosts are specified
+        limit_arg = ""
+        if ephemeral_hosts and inventory and not inventory.get("is_ephemeral"):
+            limit_arg = " --limit '" + ",".join(ephemeral_hosts) + "'"
         if is_playbook:
-            cmd_parts = ["ansible-playbook", "-i", local_inv, str(script_path)]
+            cmd_parts = ["ansible-playbook", "-i", local_inv]
+            if limit_arg.strip():
+                cmd_parts += ["--limit", ",".join(ephemeral_hosts)]
+            cmd_parts.append(str(script_path))
             if args:
                 cmd_parts.extend(args.split())
         else:
-            cmd_parts = ["ansible", "all", "-i", local_inv, "-m", "script",
-                         "-a", f"{script_path} {args}".strip()]
+            cmd_parts = ["ansible", "all", "-i", local_inv]
+            if limit_arg.strip():
+                cmd_parts += ["--limit", ",".join(ephemeral_hosts)]
+            cmd_parts += ["-m", "script", "-a", f"{script_path} {args}".strip()]
 
         await queue.put(f"[INFO] Running locally: {' '.join(cmd_parts)}\n")
         await queue.put("-" * 60 + "\n")
@@ -963,7 +972,9 @@ async def _execute_script(run_id, machine, script_path, args, queue,
         return
 
     async def _run_on_conn(conn):
-        await queue.put("[INFO] Connected. Uploading script...\n")
+        use_ansible = machine.get("use_ansible", False)
+        await queue.put(f"[INFO] Connected to {machine['host']}. "
+                        f"{'Uploading playbook + inventory to run ansible remotely' if use_ansible else 'Uploading script'}...\n")
         remote_script = f"/tmp/_monitor_{uuid.uuid4().hex}_{script_path.name}"
         remote_inv: str | None = None
         local_inv: str | None = None
@@ -984,10 +995,14 @@ async def _execute_script(run_id, machine, script_path, args, queue,
 
             if machine.get("use_ansible"):
                 inv_arg = remote_inv or machine.get("ansible_inventory") or "localhost,"
+                # --limit: apply host filter for non-ephemeral inventories when hosts are specified
+                limit_arg = ""
+                if ephemeral_hosts and inventory and not inventory.get("is_ephemeral"):
+                    limit_arg = " --limit '" + ",".join(ephemeral_hosts) + "'"
                 if script_path.suffix in {".yml", ".yaml"}:
-                    cmd = f"ansible-playbook -i '{inv_arg}' {remote_script} {args} 2>&1"
+                    cmd = f"ansible-playbook -i '{inv_arg}'{limit_arg} {remote_script} {args} 2>&1"
                 else:
-                    cmd = f"ansible all -i '{inv_arg}' -m script -a '{remote_script} {args}' 2>&1"
+                    cmd = f"ansible all -i '{inv_arg}'{limit_arg} -m script -a '{remote_script} {args}' 2>&1"
             else:
                 cmd = f"chmod +x {remote_script} && {remote_script} {args} 2>&1"
 

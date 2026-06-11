@@ -133,7 +133,8 @@ function RunJumpChainEditor({ hops, onChange }: {
   return (
     <div className="border border-slate-700 rounded-lg p-2.5 flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-400">🔗 Jump Host Chain</span>
+        <span className="text-xs font-medium text-slate-400">🔗 SSH Jump Chain</span>
+        <span className="text-[10px] text-slate-500 ml-1">(hops to reach target)</span>
         <button onClick={addHop}
           className="text-[10px] text-slate-400 border border-slate-600 hover:border-slate-400 px-2 py-0.5 rounded transition-colors">
           + Add hop
@@ -300,7 +301,7 @@ export default function App() {
       return v.includes(' ') ? `"${v}"` : v
     }).join(' ')
     const effectiveArgs = paramArgs ? (args ? `${paramArgs} ${args}` : paramArgs) : args
-    const ephHosts = needsInventory && selectedInventoryObj?.is_ephemeral ? ephemeralHostList : []
+    const ephHosts = needsInventory && selectedInventory ? ephemeralHostList : []
     const machineName = selectedMachineObj?.name ?? '?'
     const tabId = Date.now().toString()
     const newTab: RunTab = {
@@ -539,21 +540,26 @@ export default function App() {
                                        hover:border-slate-500 rounded-lg px-2 transition-colors" title="Manage">✏️
                           </button>
                         </div>
-                        {selectedInventoryObj?.is_ephemeral && (
+                        {selectedInventory && (
                           <div className="flex flex-col gap-1">
-                            <label className="text-xs text-slate-400">Hosts for this run (from import)</label>
-                            {ephemeralHostList.length > 0 ? (
-                              <div className="bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-400 max-h-20 overflow-y-auto">
-                                {ephemeralHostList.join('\n')}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-slate-500 italic">No hosts — enter hosts in the Import panel.</p>
-                            )}
-                            {ephemeralHostList.length > 0 && (
-                              <span className="text-[10px] text-slate-500">
-                                {ephemeralHostList.length} host{ephemeralHostList.length !== 1 ? 's' : ''} queued
-                              </span>
-                            )}
+                            <label className="text-xs text-slate-400">
+                              {selectedInventoryObj?.is_ephemeral ? 'Hosts for this run' : 'Limit to hosts (optional)'}
+                              {ephemeralHostList.length > 0 && (
+                                <span className="ml-1 text-slate-500">({ephemeralHostList.length} host{ephemeralHostList.length !== 1 ? 's' : ''})</span>
+                              )}
+                            </label>
+                            <textarea
+                              value={ephemeralHosts}
+                              onChange={e => setEphemeralHosts(e.target.value)}
+                              disabled={isRunning}
+                              rows={4}
+                              placeholder={selectedInventoryObj?.is_ephemeral
+                                ? 'server1.example.com\nserver2.example.com'
+                                : 'Leave empty to run on all hosts\nserver1.example.com\nserver2.example.com'}
+                              className="bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2
+                                         text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500
+                                         resize-y placeholder-slate-600 disabled:opacity-50"
+                            />
                           </div>
                         )}
                       </div>

@@ -3,7 +3,7 @@ import type { AnsibleInventory } from '../types'
 import { bulkImportMachinesWithJump } from '../api'
 
 type ScriptType = 'ansible' | 'shell'
-type AnsibleConn = 'ssh' | 'kerberos' | 'inventory'
+type AnsibleConn = 'ssh' | 'inventory'
 type ShellConn   = 'ssh' | 'none'
 
 interface Props {
@@ -46,7 +46,6 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
 
   function effectiveAuthMethod(): string {
     if (scriptType === 'shell') return shellConn === 'none' ? 'none' : sshAuth
-    if (ansibleConn === 'kerberos')  return 'kerberos'
     if (ansibleConn === 'inventory') return 'inventory'
     return sshAuth
   }
@@ -101,10 +100,9 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
           <div className="flex flex-col gap-1.5">
             <label className="text-xs text-[var(--text-muted)]">Connection</label>
             {scriptType === 'ansible' ? (
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 {([
                   { v: 'ssh'       as AnsibleConn, label: '🔑 SSH',       note: 'key or password' },
-                  { v: 'kerberos'  as AnsibleConn, label: '🎟️ Kerberos',  note: 'kinit ticket' },
                   { v: 'inventory' as AnsibleConn, label: '📄 Inventory', note: 'creds in file' },
                 ]).map(opt => (
                   <label key={opt.v} className={cardCls}>
@@ -133,13 +131,6 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
               </div>
             )}
           </div>
-
-          {/* Kerberos info */}
-          {scriptType === 'ansible' && ansibleConn === 'kerberos' && (
-            <div className="px-3 py-2 bg-blue-900/20 border border-blue-700/30 rounded-lg text-xs text-blue-300">
-              Ansible uses the active Kerberos ticket. Run <code>kinit user@REALM</code> on the control node before executing.
-            </div>
-          )}
 
           {/* Inventory selector for ansible+inventory */}
           {scriptType === 'ansible' && ansibleConn === 'inventory' && (
@@ -204,8 +195,8 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
             <input value={pastePrefix} onChange={e => setPastePrefix(e.target.value)} className={inputCls} placeholder="prod-" />
           </div>
 
-          {/* Ansible inventory override (ssh/kerberos modes) */}
-          {scriptType === 'ansible' && ansibleConn !== 'inventory' && (
+          {/* Ansible inventory override (ssh mode) */}
+          {scriptType === 'ansible' && ansibleConn === 'ssh' && (
             <div className="flex flex-col gap-1">
               <label className="text-xs text-[var(--text-muted)]">Ansible inventory override (optional)</label>
               <select value={pasteInventory} onChange={e => setPasteInventory(e.target.value)} className={inputCls + ' text-sm'}>
