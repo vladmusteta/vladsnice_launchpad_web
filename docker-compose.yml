@@ -1,9 +1,8 @@
 services:
   backend:
-    image: ghcr.io/vladko15/monitoring-app-backend:latest
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
     restart: unless-stopped
     ports:
       - "${BIND_IP:-0.0.0.0}:${BACKEND_PORT:-8000}:8000"
@@ -36,10 +35,9 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/vladko15/monitoring-app-frontend:latest
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.frontend
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     restart: unless-stopped
     ports:
       - "${BIND_IP:-0.0.0.0}:${FRONTEND_PORT:-3000}:80"
