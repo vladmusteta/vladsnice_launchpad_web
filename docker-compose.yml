@@ -4,15 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     restart: unless-stopped
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${BACKEND_PORT:-8000}:8000"
     volumes:
       # Core data (JSON configs, history, machines) — named volume
       - monitoring_data:/data
-      # Override scripts and envs with host directories if desired.
-      # Set SCRIPTS_DIR / ENVS_DIR in .env or inline, e.g.:
+      # Override with host directories via .env:
       #   SCRIPTS_DIR=/home/user/my-scripts
       #   ENVS_DIR=/home/user/my-envs
+      #   LOGS_DIR=/home/user/my-logs
       - ${SCRIPTS_DIR:-monitoring_scripts}:/data/scripts
       - ${ENVS_DIR:-monitoring_envs}:/data/envs
+      - ${LOGS_DIR:-monitoring_logs}:/data/logs
     environment:
       DATA_DIR: /data
     # WireGuard requires NET_ADMIN capability and host network access to tun
@@ -37,13 +40,14 @@ services:
       dockerfile: Dockerfile.frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${BIND_IP:-0.0.0.0}:${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy
 
 volumes:
   monitoring_data:
-  # Named fallback volumes — only created when SCRIPTS_DIR / ENVS_DIR are not set
+  # Named fallback volumes — only used when the corresponding *_DIR env var is not set
   monitoring_scripts:
   monitoring_envs:
+  monitoring_logs:
