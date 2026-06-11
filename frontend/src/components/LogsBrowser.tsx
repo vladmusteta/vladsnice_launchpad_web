@@ -15,6 +15,7 @@ export default function LogsBrowser({ scriptFilter, envId = '' }: Props) {
   const [contentLoading, setContentLoading] = useState(false)
   const [catFilter, setCatFilter] = useState<'all' | 'ansible' | 'bash'>('all')
   const [search, setSearch] = useState('')
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -48,6 +49,10 @@ export default function LogsBrowser({ scriptFilter, envId = '' }: Props) {
   let visible = catFilter === 'all' ? files : files.filter(f => f.category === catFilter)
   if (search) visible = visible.filter(f => fuzzy(f.name, search))
   if (scriptFilter) visible = visible.filter(f => f.name.includes(scriptFilter.replace(/.*\//, '').replace(/\.[^.]+$/, '')))
+  visible = [...visible].sort((a, b) => {
+    const diff = new Date(a.modified).getTime() - new Date(b.modified).getTime()
+    return sortOrder === 'newest' ? -diff : diff
+  })
 
   const ansible = visible.filter(f => f.category === 'ansible')
   const bash = visible.filter(f => f.category === 'bash')
@@ -96,7 +101,7 @@ export default function LogsBrowser({ scriptFilter, envId = '' }: Props) {
             <span className="text-[10px] text-emerald-400 font-mono truncate">{scriptFilter.split('/').pop()}</span>
           </div>
         )}
-        <div className="shrink-0 px-3 py-1 border-b border-slate-800 flex gap-1">
+        <div className="shrink-0 px-3 py-1 border-b border-slate-800 flex items-center gap-1">
           {(['all', 'ansible', 'bash'] as const).map(f => (
             <button key={f} onClick={() => setCatFilter(f)}
               className={'px-2 py-0.5 rounded text-xs font-medium transition-colors ' +
@@ -104,6 +109,11 @@ export default function LogsBrowser({ scriptFilter, envId = '' }: Props) {
               {f === 'all' ? 'All' : f === 'ansible' ? 'Ansible' : 'Bash'}
             </button>
           ))}
+          <button
+            onClick={() => setSortOrder(o => o === 'newest' ? 'oldest' : 'newest')}
+            className="ml-auto text-[10px] text-slate-500 hover:text-slate-300 transition-colors px-1.5 py-0.5 rounded border border-slate-700 hover:border-slate-500 whitespace-nowrap"
+            title="Toggle sort order"
+          >{sortOrder === 'newest' ? '↓ Newest' : '↑ Oldest'}</button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
           {visible.length === 0 && !loading && (

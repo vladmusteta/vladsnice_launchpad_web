@@ -5,13 +5,15 @@ import { fetchHistory, clearHistory } from '../api'
 interface Props {
   scriptFilter?: string
   envId?: string
+  onReRun?: (entry: HistoryEntry) => void
 }
 
-export default function HistoryView({ scriptFilter, envId = '' }: Props) {
+export default function HistoryView({ scriptFilter, envId = '', onReRun }: Props) {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [filterStatus, setFilterStatus] = useState<'all' | 'done' | 'error' | 'running'>('all')
   const [search, setSearch] = useState('')
+  const [confirmEntry, setConfirmEntry] = useState<HistoryEntry | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -53,15 +55,23 @@ export default function HistoryView({ scriptFilter, envId = '' }: Props) {
     running: history.filter(h => h.status === 'running').length,
   }
 
-  const statusBadge = (s: HistoryEntry['status']) => {
-    if (s === 'done') return 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/30'
-    if (s === 'error') return 'bg-red-900/40 text-red-300 border border-red-700/30'
-    return 'bg-blue-900/40 text-blue-300 border border-blue-700/30'
-  }
-  const statusIcon = (s: HistoryEntry['status']) => {
-    if (s === 'done') return 'ok'
-    if (s === 'error') return 'err'
-    return '...'
+  function StatusBadge({ s }: { s: HistoryEntry['status'] }) {
+    if (s === 'done') return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono bg-emerald-900/40 text-emerald-300 border border-emerald-700/30">
+        <span className="text-emerald-400">✓</span> done
+      </span>
+    )
+    if (s === 'error') return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono bg-red-900/40 text-red-300 border border-red-700/30">
+        <span className="text-red-400">✕</span> error
+      </span>
+    )
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-mono bg-blue-900/40 text-blue-300 border border-blue-700/30">
+        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+        running
+      </span>
+    )
   }
 
   return (
@@ -121,16 +131,14 @@ export default function HistoryView({ scriptFilter, envId = '' }: Props) {
                 <th className="px-4 py-2 text-xs font-medium text-slate-500">Machine</th>
                 <th className="px-4 py-2 text-xs font-medium text-slate-500">Args</th>
                 <th className="px-4 py-2 text-xs font-medium text-slate-500">Time</th>
+                {onReRun && <th className="px-4 py-2 text-xs font-medium text-slate-500" />}
               </tr>
             </thead>
             <tbody>
               {filtered.map((h) => (
-                <tr key={h.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                <tr key={h.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors group">
                   <td className="px-4 py-2.5">
-                    <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono ' + statusBadge(h.status)}>
-                      <span className={h.status === 'running' ? 'animate-spin inline-block' : ''}>{statusIcon(h.status)}</span>
-                      {h.status}
-                    </span>
+                    <StatusBadge s={h.status} />
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="flex flex-col">
@@ -143,12 +151,58 @@ export default function HistoryView({ scriptFilter, envId = '' }: Props) {
                   <td className="px-4 py-2.5 text-slate-300 text-xs">{h.machine_name}</td>
                   <td className="px-4 py-2.5 text-slate-500 text-xs font-mono">{h.args || '—'}</td>
                   <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">{fmtDate(h.timestamp)}</td>
+                  {onReRun && (
+                    <td className="px-3 py-2.5">
+                      <button
+                        onClick={() => setConfirmEntry(h)}
+                        className="opacity-0 group-hover:opacity-100 text-xs text-slate-500 hover:text-emerald-400 transition-all px-2 py-0.5 rounded border border-transparent hover:border-emerald-700/50"
+                        title="Re-run"
+                      >↩ re-run</button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      {/* ── Re-run confirmation modal ── */}
+      {confirmEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setConfirmEntry(null)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-md mx-4 p-5"
+            onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-slate-200 mb-3">Re-run confirmation</h3>
+            <div className="flex flex-col gap-2 mb-4">
+              <Row label="Script"  value={confirmEntry.script} mono />
+              <Row label="Machine" value={confirmEntry.machine_name} />
+              {confirmEntry.args && <Row label="Args" value={confirmEntry.args} mono />}
+              {confirmEntry.environment_id && <Row label="Env" value={confirmEntry.environment_id} />}
+              <Row label="Last run" value={fmtDate(confirmEntry.timestamp)} />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmEntry(null)}
+                className="px-4 py-1.5 text-xs rounded-lg border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
+              >Cancel</button>
+              <button
+                onClick={() => { onReRun!(confirmEntry); setConfirmEntry(null) }}
+                className="px-4 py-1.5 text-xs rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
+              >▶ Run</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="text-[10px] uppercase tracking-wider text-slate-500 w-16 shrink-0 pt-0.5">{label}</span>
+      <span className={`text-xs text-slate-200 break-all ${mono ? 'font-mono' : ''}`}>{value}</span>
     </div>
   )
 }

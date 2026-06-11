@@ -378,6 +378,17 @@ export default function App() {
 
   const activeTab_ = runTabs.find(t => t.id === activeRunTab)
   const isRunning = runTabs.some(t => t.status === 'running')
+
+  // Dynamic browser tab title
+  useEffect(() => {
+    const runningTab = runTabs.find(t => t.status === 'running')
+    if (runningTab) {
+      const name = runningTab.script.split('/').pop() ?? runningTab.script
+      document.title = `● Running: ${name}`
+    } else {
+      document.title = 'Monitoring App'
+    }
+  }, [runTabs])
   const category = scriptCategory(selectedScript)
 
   function handleRun(connParams: Omit<RunParams, 'script' | 'args' | 'envId'>) {
@@ -511,7 +522,15 @@ export default function App() {
       {/* ── History tab ── */}
       {activeTab === 'history' && (
         <div className="flex-1 overflow-hidden">
-          <HistoryView scriptFilter={selectedScript} envId={selectedEnv} />
+          <HistoryView
+            scriptFilter={selectedScript}
+            envId={selectedEnv}
+            onReRun={(entry) => {
+              setSelectedScript(entry.script)
+              setArgs(entry.args ?? '')
+              setActiveTab('run')
+            }}
+          />
         </div>
       )}
 
