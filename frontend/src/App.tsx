@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Machine, TreeNode, Environment, AnsibleInventory, RunTab } from './types'
+import type { Machine, TreeNode, Environment, AnsibleInventory, RunTab, JumpHost } from './types'
 import { fetchScriptsTree, fetchMachines, fetchEnvironments, fetchInventories, startRun, saveLogs, fetchScriptContent, stopRun, saveScriptContent } from './api'
 import { createEnvironment, deleteEnvironment } from './api'
 import { useDragResize } from './hooks/useDragResize'
@@ -113,6 +113,92 @@ function EnvPills({ environments, selected, onSelect, onChange }: {
 
 type MainTab = 'run' | 'logs' | 'history' | 'hosts' | 'vpn'
 
+// ── Jump host chain editor (used in the run panel) ─────────────────────────
+const EMPTY_HOP: JumpHost = { host: '', port: 22, username: '', auth_method: 'key', key_path: '', password: '' }
+
+function RunJumpChainEditor({ hops, onChange }: {
+  hops: JumpHost[]
+  onChange: (hops: JumpHost[]) => void
+}) {
+  function addHop()                      { onChange([...hops, { ...EMPTY_HOP }]) }
+  function removeHop(i: number)          { onChange(hops.filter((_, idx) => idx !== i)) }
+  function updateHop(i: number, h: JumpHost) { onChange(hops.map((x, idx) => idx === i ? h : x)) }
+  function moveHop(from: number, to: number) {
+    const a = [...hops]; [a[from], a[to]] = [a[to], a[from]]; onChange(a)
+  }
+
+  const inputCls = 'bg-slate-800 border border-slate-600 text-slate-200 rounded px-2 py-1 text-xs ' +
+    'focus:outline-none focus:ring-1 focus:ring-purple-500 w-full'
+
+  return (
+    <div className="border border-slate-700 rounded-lg p-2.5 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-400">🔗 Jump Host Chain</span>
+        <button onClick={addHop}
+          className="text-[10px] text-slate-400 border border-slate-600 hover:border-slate-400 px-2 py-0.5 rounded transition-colors">
+          + Add hop
+        </button>
+      </div>
+      {hops.length === 0 && (
+        <p className="text-[10px] text-slate-500 italic">No jump hosts — connects directly to target.</p>
+      )}
+      {hops.map((hop, i) => (
+        <div key={i} className="border border-slate-700/60 rounded p-2 flex flex-col gap-1.5 bg-slate-900/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider">
+              Hop {i + 1}{i === 0 ? ' (entry)' : ''}
+            </span>
+            <div className="flex gap-1">
+              {i > 0          && <button onClick={() => moveHop(i, i - 1)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1">↑</button>}
+              {i < hops.length - 1 && <button onClick={() => moveHop(i, i + 1)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1">↓</button>}
+              <button onClick={() => removeHop(i)} className="text-[10px] text-slate-500 hover:text-red-400 px-1">✕</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            <div className="col-span-2 flex flex-col gap-0.5">
+              <span className="text-[10px] text-slate-500">Host</span>
+              <input value={hop.host} onChange={e => updateHop(i, { ...hop, host: e.target.value })}
+                className={inputCls} placeholder="bastion.example.com" />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-slate-500">Port</span>
+              <input type="number" value={hop.port} onChange={e => updateHop(i, { ...hop, port: Number(e.target.value) })}
+                className={inputCls} />
+            </div>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] text-slate-500">Username</span>
+            <input value={hop.username} onChange={e => updateHop(i, { ...hop, username: e.target.value })}
+              className={inputCls} placeholder="ec2-user" />
+          </div>
+          <div className="flex gap-3">
+            {(['key', 'password'] as const).map(m => (
+              <label key={m} className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer">
+                <input type="radio" checked={hop.auth_method === m} onChange={() => updateHop(i, { ...hop, auth_method: m })}
+                  className="accent-purple-500" />
+                {m === 'key' ? 'SSH Key' : 'Password'}
+              </label>
+            ))}
+          </div>
+          {hop.auth_method === 'key'
+            ? <input value={hop.key_path ?? ''} onChange={e => updateHop(i, { ...hop, key_path: e.target.value })}
+                className={inputCls} placeholder="~/.ssh/bastion_key" />
+            : <input type="password" value={hop.password ?? ''} onChange={e => updateHop(i, { ...hop, password: e.target.value })}
+                className={inputCls} autoComplete="new-password" placeholder="Password" />
+          }
+        </div>
+      ))}
+      {hops.length > 1 && (
+        <p className="text-[10px] text-slate-500">
+          Chain: {hops.map(h => h.host || '?').join(' → ')} → target
+        </p>
+      )}
+    </div>
+  )
+}
+
+
+
 const THEMES = [
   { id: 'dark-slate',  label: '🌑 Dark Slate' },
   { id: 'dark-green',  label: '🌿 Dark Green' },
@@ -138,6 +224,7 @@ export default function App() {
   const [selectedInventory, setSelectedInventory] = useState('')
   const [ephemeralHosts, setEphemeralHosts] = useState('')
   const [args, setArgs] = useState('')
+  const [runJumpHops, setRunJumpHops] = useState<JumpHost[]>([])
   const [scriptParams, setScriptParams] = useState<{ prompt: string; varName: string }[]>([])
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
 
@@ -228,7 +315,7 @@ export default function App() {
     })
     setActiveRunTab(tabId)
 
-    void startRun(selectedScript, selectedMachine, effectiveArgs, selectedInventory, ephHosts, selectedEnv)
+    void startRun(selectedScript, selectedMachine, effectiveArgs, selectedInventory, ephHosts, selectedEnv, runJumpHops)
       .then((runId) => {
         // store the real runId on the tab for cancellation
         setRunTabs(prev => prev.map(t => t.id === tabId ? { ...t, runId } : t))
@@ -574,7 +661,8 @@ export default function App() {
                   </div>
 
                   {/* Run button */}
-                  <div className="shrink-0 px-4 py-2 border-t border-slate-800">
+                  <div className="shrink-0 px-4 py-2 border-t border-slate-800 flex flex-col gap-2">
+                    <RunJumpChainEditor hops={runJumpHops} onChange={setRunJumpHops} />
                     <button
                       onClick={handleRun}
                       disabled={!canRun}

@@ -150,10 +150,11 @@ export async function startRun(
   inventory_id = '',
   ephemeral_hosts: string[] = [],
   envId = '',
+  jump_hosts: { host: string; port: number; username: string; auth_method: string; key_path?: string; password?: string }[] = [],
 ): Promise<string> {
   const res = await fetch(`${BASE}/run`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ script, machine_id, args, inventory_id, ephemeral_hosts, environment_id: envId }),
+    body: JSON.stringify({ script, machine_id, args, inventory_id, ephemeral_hosts, environment_id: envId, jump_hosts }),
   })
   if (!res.ok) {
     const body = await res.json() as { detail?: string }

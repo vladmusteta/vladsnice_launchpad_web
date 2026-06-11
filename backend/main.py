@@ -149,6 +149,7 @@ class RunRequest(BaseModel):
     inventory_id: str = ""
     ephemeral_hosts: list[str] = []
     environment_id: str = ""
+    jump_hosts: list[JumpHost] = []
 
 
 # ─── Active runs ──────────────────────────────────────────────────────────────
@@ -750,6 +751,12 @@ async def start_run(req: RunRequest):
     if req.inventory_id:
         inventory = next((i for i in _load_inventories() if i["id"] == req.inventory_id), None)
 
+    # Override machine's jump hosts if specified at run time
+    if req.jump_hosts:
+        machine = dict(machine)
+        machine['jump_hosts'] = [jh.model_dump() for jh in req.jump_hosts]
+        machine['jump_host'] = None
+
     run_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
     active_runs[run_id] = queue
@@ -799,7 +806,8 @@ async def _execute_local(run_id, machine, script_path, args, queue,
         if inventory:
             if inventory.get("is_ephemeral"):
                 hosts = ephemeral_hosts or [host]
-                inv_content = (inventory.get("base_content") or "") +                     "\n\n[targets]\n" + "\n".join(hosts) + "\n"
+                base = (inventory.get("base_content") or "").rstrip("\n")
+                inv_content = base + "\n\n" + "\n".join(hosts) + "\n"
             else:
                 inv_content = inventory.get("content") or ""
         else:
@@ -965,8 +973,8 @@ async def _execute_script(run_id, machine, script_path, args, queue,
                 if machine.get("use_ansible") and inventory:
                     if inventory.get("is_ephemeral"):
                         hosts = ephemeral_hosts or [machine["host"]]
-                        inv_content = (inventory.get("base_content") or "") + \
-                            "\n\n[targets]\n" + "\n".join(hosts) + "\n"
+                        base = (inventory.get("base_content") or "").rstrip("\n")
+                        inv_content = base + "\n\n" + "\n".join(hosts) + "\n"
                     else:
                         inv_content = inventory.get("content") or ""
                     with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as f:

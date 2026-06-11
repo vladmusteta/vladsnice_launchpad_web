@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { AnsibleInventory, JumpHost } from '../types'
+import type { AnsibleInventory } from '../types'
 import { bulkImportMachinesWithJump } from '../api'
 
 type ScriptType = 'ansible' | 'shell'
@@ -22,54 +22,6 @@ const cardCls =
   'flex items-start gap-1.5 cursor-pointer p-2 rounded border border-[var(--border)] ' +
   'hover:border-[var(--border-hover)] transition-colors'
 
-const emptyJump = (): JumpHost => ({ host: '', port: 22, username: '', auth_method: 'key', key_path: '', password: '' })
-
-function BastionHopEditor({ hop, index, total, onChange, onRemove, onMoveUp, onMoveDown }: {
-  hop: JumpHost; index: number; total: number
-  onChange: (h: JumpHost) => void; onRemove: () => void
-  onMoveUp: () => void; onMoveDown: () => void
-}) {
-  return (
-    <div className="border border-[var(--border)] rounded-lg p-3 flex flex-col gap-2 bg-[var(--surface-elevated)]">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-          Hop {index + 1}{index === 0 ? ' (entry)' : ''}
-        </span>
-        <div className="flex gap-1">
-          {index > 0         && <button onClick={onMoveUp}   className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] px-1">↑</button>}
-          {index < total - 1 && <button onClick={onMoveDown} className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] px-1">↓</button>}
-          <button onClick={onRemove} className="text-[10px] text-[var(--text-muted)] hover:text-red-400 px-1">✕</button>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--text-muted)]">Host</label>
-          <input value={hop.host} onChange={e => onChange({ ...hop, host: e.target.value })} className={inputCls} placeholder="bastion.example.com" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--text-muted)]">Port</label>
-          <input type="number" value={hop.port} onChange={e => onChange({ ...hop, port: Number(e.target.value) })} className={inputCls} />
-        </div>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-[var(--text-muted)]">Username</label>
-        <input value={hop.username} onChange={e => onChange({ ...hop, username: e.target.value })} className={inputCls} placeholder="ec2-user" />
-      </div>
-      <div className="flex gap-3">
-        {(['key', 'password'] as const).map(m => (
-          <label key={m} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
-            <input type="radio" checked={hop.auth_method === m} onChange={() => onChange({ ...hop, auth_method: m })} className="accent-purple-500" />
-            {m === 'key' ? 'SSH Key' : 'Password'}
-          </label>
-        ))}
-      </div>
-      {hop.auth_method === 'key'
-        ? <input value={hop.key_path ?? ''} onChange={e => onChange({ ...hop, key_path: e.target.value })} className={inputCls} placeholder="~/.ssh/bastion_key" />
-        : <input type="password" value={hop.password ?? ''} onChange={e => onChange({ ...hop, password: e.target.value })} className={inputCls} autoComplete="new-password" />
-      }
-    </div>
-  )
-}
 
 export default function MachineSelector({ inventories, onSelect, onChanged, onHostsChange, disabled }: Props) {
   const [pasteText,     setPasteText]     = useState('')
@@ -87,18 +39,10 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
   const [ansibleConn, setAnsibleConn] = useState<AnsibleConn>('ssh')
   const [shellConn,   setShellConn]   = useState<ShellConn>('ssh')
   const [sshAuth,     setSshAuth]     = useState<'key' | 'password'>('key')
-  const [jumpHops,    setJumpHops]    = useState<JumpHost[]>([])
 
   const pasteHosts = pasteText.split(/[\n,;]/).map(h => h.trim()).filter(Boolean)
 
   useEffect(() => { onHostsChange?.(pasteHosts) }, [pasteText]) // eslint-disable-line
-
-  function addHop()                     { setJumpHops(prev => [...prev, emptyJump()]) }
-  function removeHop(i: number)         { setJumpHops(prev => prev.filter((_, idx) => idx !== i)) }
-  function updateHop(i: number, h: JumpHost) { setJumpHops(prev => prev.map((x, idx) => idx === i ? h : x)) }
-  function moveHop(from: number, to: number) {
-    setJumpHops(prev => { const a = [...prev]; [a[from], a[to]] = [a[to], a[from]]; return a })
-  }
 
   function effectiveAuthMethod(): string {
     if (scriptType === 'shell') return shellConn === 'none' ? 'none' : sshAuth
@@ -112,7 +56,6 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
     setImporting(true); setImportError(''); setImportSuccess('')
     try {
       const auth = effectiveAuthMethod()
-      const validHops = jumpHops.filter(h => h.host.trim())
       const created = await bulkImportMachinesWithJump({
         hosts: pasteHosts, username: pasteUser, port: pastePort,
         auth_method: auth,
@@ -121,7 +64,6 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
         name_prefix: pastePrefix || undefined,
         use_ansible: scriptType === 'ansible',
         ansible_inventory: scriptType === 'ansible' && ansibleConn === 'inventory' ? (pasteInventory || undefined) : undefined,
-        jump_hosts: validHops.length ? validHops : undefined,
       })
       onChanged()
       if (created.length > 0) onSelect(created[0].id)
@@ -275,32 +217,7 @@ export default function MachineSelector({ inventories, onSelect, onChanged, onHo
             </div>
           )}
 
-          {/* Bastion chain */}
-          <div className="border border-[var(--border)] rounded-lg p-3 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-[var(--text-secondary)]">🔗 Jump Host Chain</span>
-              <button onClick={addHop}
-                className="text-[10px] text-[var(--accent-text)] border border-[var(--border)] hover:border-[var(--border-hover)] px-2 py-0.5 rounded transition-colors">
-                + Add hop
-              </button>
-            </div>
-            {jumpHops.length === 0 && (
-              <p className="text-[10px] text-[var(--text-muted)] italic">No jump hosts — connects directly to target.</p>
-            )}
-            {jumpHops.map((hop, i) => (
-              <BastionHopEditor key={i} hop={hop} index={i} total={jumpHops.length}
-                onChange={h => updateHop(i, h)}
-                onRemove={() => removeHop(i)}
-                onMoveUp={() => moveHop(i, i - 1)}
-                onMoveDown={() => moveHop(i, i + 1)}
-              />
-            ))}
-            {jumpHops.length > 1 && (
-              <p className="text-[10px] text-[var(--text-muted)]">
-                Chain: {jumpHops.map(h => h.host || '?').join(' → ')} → target
-              </p>
-            )}
-          </div>
+          {/* Bastion chain removed — configure jump hosts in the Run panel */}
 
           {importError   && <p className="text-red-400 text-xs">{importError}</p>}
           {importSuccess && <p className="text-emerald-400 text-xs">{importSuccess}</p>}
