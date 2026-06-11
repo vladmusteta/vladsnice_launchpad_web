@@ -1,0 +1,86 @@
+---
+- hosts: provisioning_servers
+  gather_facts: no
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 1. Detect D drive
+    # -----------------------------------------------------------------------
+    - name: Check if D drive exists
+      win_stat:
+        path: D:\
+      register: d_exists
+
+    - name: Set install drive facts
+      set_fact:
+        install_drive:      "{{ 'D' if d_exists.stat.exists else 'C' }}"
+        install_zip_dest:   "{{ 'D' if d_exists.stat.exists else 'C' }}:\\Helix22301WinProd.zip"
+        install_dir:        "{{ 'D' if d_exists.stat.exists else 'C' }}:\\Helix22301WinProd"
+        install_script_src: "{{ '/etc/ansible/assets/run_patrol_install_d.ps1' if d_exists.stat.exists else '/etc/ansible/assets/run_patrol_install_c.ps1' }}"
+        install_script_dest: "{{ 'D' if d_exists.stat.exists else 'C' }}:\\run_install.ps1"
+
+    - name: Show detected install drive
+      debug:
+        msg: "Installing on {{ install_drive }} drive"
+
+    # -----------------------------------------------------------------------
+    # 2. Copy and extract installer
+    # -----------------------------------------------------------------------
+    - name: Copy Helix install zip to target drive
+      win_copy:
+        src: /etc/ansible/assets/Helix22301WinProd.zip
+        dest: "{{ install_zip_dest }}"
+
+    - name: Unzip Helix installer
+      win_unzip:
+        src: "{{ install_zip_dest }}"
+        dest: "{{ install_dir }}"
+        delete_archive: yes
+
+    # -----------------------------------------------------------------------
+    # 3. Copy and execute install script
+    # -----------------------------------------------------------------------
+    - name: Copy PowerShell install script to target drive
+      win_copy:
+        src: "{{ install_script_src }}"
+        dest: "{{ install_script_dest }}"
+
+    - name: Execute PowerShell install script
+      win_shell: "{{ install_script_dest }}"
+      register: install_output
+
+    - name: Show install output
+      debug:
+        var: install_output
+
+    # -----------------------------------------------------------------------
+    # 4. Verify PatrolAgent service
+    # -----------------------------------------------------------------------
+    - name: Check PatrolAgent service status
+      win_service:
+        name: PatrolAgent
+      register: service_info
+
+    - name: Show PatrolAgent service info
+      debug:
+        var: service_info
+
+    # -----------------------------------------------------------------------
+    # 5. Cleanup
+    # -----------------------------------------------------------------------
+    - name: Remove extracted install directory
+      win_file:
+        path: "{{ install_dir }}"
+        state: absent
+
+    - name: Remove PowerShell install script
+      win_file:
+        path: "{{ install_script_dest }}"
+        state: absent
+
+    - name: Remove bmc_products folder from D drive
+      win_file:
+        path: D:\bmc_products
+        state: absent
+      when: d_exists.stat.exists

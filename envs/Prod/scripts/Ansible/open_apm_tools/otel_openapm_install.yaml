@@ -1,0 +1,252 @@
+---
+- name: Reinstall Splunk OpenTelemetry Collector
+  hosts: provisioning_servers
+  gather_facts: no
+  vars:
+    src_dir: /etc/ansible/assets/openapm_assets/install_script
+    dest_dir: C:/
+    service_name: splunk-otel-collector
+    config_src: C:/ProgramData/Splunk/OpenTelemetry Collector/agent_config.yaml
+    config_backup: C:/agent_config_backup.yaml
+    splunk_dir: C:/Program Files/Splunk
+    install_script: C:/install.ps1
+    
+  tasks:
+    # ==========================================
+    # PHASE 1: BACKUP CONFIGURATION
+    # ==========================================
+    - name: Check if agent_config.yaml exists
+      ansible.windows.win_stat:
+        path: "{{ config_src }}"
+      register: config_file
+      tags: [backup, preparation]
+
+    - name: Backup agent_config.yaml if it exists
+      ansible.windows.win_copy:
+        src: "{{ config_src }}"
+        dest: "{{ config_backup }}"
+        remote_src: yes
+      when: config_file.stat.exists
+      tags: [backup, preparation]
+
+    - name: Display backup status
+      debug:
+        msg: "Configuration backup {{ 'completed' if config_file.stat.exists else 'skipped (file does not exist)' }}"
+      tags: [backup, preparation]
+
+    # ==========================================
+    # PHASE 2: COPY INSTALLATION FILES
+    # ==========================================
+    - name: Copy install.ps1
+      ansible.windows.win_copy:
+        src: "{{ src_dir }}/install.ps1"
+        dest: "{{ dest_dir }}install.ps1"
+      tags: [preparation]
+
+    - name: Copy splunk-otel-collector.ps1
+      ansible.windows.win_copy:
+        src: "{{ src_dir }}/splunk-otel-collector.ps1"
+        dest: "{{ dest_dir }}splunk-otel-collector.ps1"
+      tags: [preparation]
+
+    - name: Verify files were copied
+      ansible.windows.win_stat:
+        path: "{{ item }}"
+      register: copied_files
+      loop:
+        - "{{ dest_dir }}install.ps1"
+        - "{{ dest_dir }}splunk-otel-collector.ps1"
+      tags: [preparation]
+
+    - name: Display copied files status
+      debug:
+        msg: "File {{ item.item }} exists: {{ item.stat.exists }}"
+      loop: "{{ copied_files.results }}"
+      tags: [preparation]
+
+    # ==========================================
+    # PHASE 3: STOP AND REMOVE EXISTING SERVICE
+    # ==========================================
+    - name: Check if service exists
+      ansible.windows.win_service:
+        name: "{{ service_name }}"
+      register: service_exists
+      ignore_errors: yes
+      tags: [cleanup]
+
+    - name: Query service for PID
+      ansible.windows.win_shell: |
+        sc.exe queryex {{ service_name }} | findstr PID
+      register: service_pid
+      when: service_exists is succeeded
+      ignore_errors: yes
+      tags: [cleanup]
+
+    - name: Extract PID from service query
+      set_fact:
+        otel_pid: "{{ service_pid.stdout | regex_search('PID\\s*:\\s*(\\d+)', '\\1') | default([]) | first | default('') }}"
+      when: 
+        - service_exists is succeeded
+        - service_pid is defined
+        - service_pid.stdout is defined
+        - service_pid.stdout | regex_search('PID\\s*:\\s*(\\d+)')
+      tags: [cleanup]
+
+    - name: Display extracted PID
+      debug:
+        msg: "Service PID: {{ otel_pid | default('No PID found or service not running') }}"
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    - name: Kill process forcefully
+      ansible.windows.win_shell: |
+        taskkill /PID {{ otel_pid }} /F
+      when: 
+        - service_exists is succeeded
+        - otel_pid is defined
+        - otel_pid != ""
+      ignore_errors: yes
+      register: process_kill
+      tags: [cleanup]
+
+    - name: Display process kill result
+      debug:
+        msg: "Process kill result: {{ 'Success' if process_kill is succeeded else 'Failed or no process to kill' }}"
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    - name: Wait for process to be killed
+      ansible.windows.win_wait_for:
+        timeout: 5
+      when: 
+        - service_exists is succeeded
+        - process_kill is succeeded
+      tags: [cleanup]
+
+    - name: Delete Splunk OTel service
+      ansible.windows.win_shell: |
+        sc.exe delete {{ service_name }}
+      when: service_exists is succeeded
+      ignore_errors: yes
+      register: service_deletion
+      tags: [cleanup]
+
+    - name: Display service deletion result
+      debug:
+        msg: "Service deletion: {{ 'Success' if service_deletion is succeeded else 'Failed or already deleted' }}"
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    - name: Wait for service deletion to complete
+      ansible.windows.win_wait_for:
+        timeout: 5
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    # ==========================================
+    # PHASE 4: REMOVE PROGRAM FILES
+    # ==========================================
+    - name: Check if Splunk directory exists
+      ansible.windows.win_stat:
+        path: "{{ splunk_dir }}"
+      register: splunk_dir_check
+      tags: [cleanup]
+
+    - name: Remove Splunk program files directory
+      ansible.windows.win_file:
+        path: "{{ splunk_dir }}"
+        state: absent
+      when: splunk_dir_check.stat.exists
+      register: dir_removal
+      ignore_errors: yes
+      tags: [cleanup]
+
+    - name: Display directory removal status
+      debug:
+        msg: "Splunk directory removal: {{ 'successful' if dir_removal is succeeded else 'failed or not found' }}"
+      tags: [cleanup]
+
+    # ==========================================
+    # PHASE 5: RUN INSTALLER
+    # ==========================================
+    - name: Run Splunk OTel Collector installer
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File "{{ install_script }}"
+      args:
+        chdir: C:/
+      register: install_result
+      failed_when: install_result.rc != 0
+      tags: [install]
+
+    - name: Display installation output
+      debug:
+        msg: "{{ install_result.stdout_lines }}"
+      when: install_result.stdout_lines is defined
+      tags: [install]
+
+    - name: Display installation errors (if any)
+      debug:
+        msg: "{{ install_result.stderr_lines }}"
+      when: 
+        - install_result.stderr_lines is defined
+        - install_result.stderr_lines | length > 0
+      tags: [install]
+
+    # ==========================================
+    # PHASE 6: STOP AND REMOVE EXISTING SERVICE AGAIN
+    # ==========================================
+    - name: Check if service exists
+      ansible.windows.win_service:
+        name: "{{ service_name }}"
+      register: service_exists
+      ignore_errors: yes
+      tags: [cleanup]
+
+    - name: Query service for PID
+      ansible.windows.win_shell: |
+        sc.exe queryex {{ service_name }} | findstr PID
+      register: service_pid
+      when: service_exists is succeeded
+      ignore_errors: yes
+      tags: [cleanup]
+
+    - name: Extract PID from service query
+      set_fact:
+        otel_pid: "{{ service_pid.stdout | regex_search('PID\\s*:\\s*(\\d+)', '\\1') | default([]) | first | default('') }}"        
+      when:
+        - service_exists is succeeded
+        - service_pid is defined
+        - service_pid.stdout is defined
+        - service_pid.stdout | regex_search('PID\\s*:\\s*(\\d+)')
+      tags: [cleanup]
+
+    - name: Display extracted PID
+      debug:
+        msg: "Service PID: {{ otel_pid | default('No PID found or service not running') }}"
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    - name: Kill process forcefully
+      ansible.windows.win_shell: |
+        taskkill /PID {{ otel_pid }} /F
+      when:
+        - service_exists is succeeded
+        - otel_pid is defined
+        - otel_pid != ""
+      ignore_errors: yes
+      register: process_kill
+      tags: [cleanup]
+
+    - name: Display process kill result
+      debug:
+        msg: "Process kill result: {{ 'Success' if process_kill is succeeded else 'Failed or no process to kill' }}"
+      when: service_exists is succeeded
+      tags: [cleanup]
+
+    - name: Wait for process to be killed
+      ansible.windows.win_wait_for:
+        timeout: 5
+      when:
+        - service_exists is succeeded
+        - process_kill is succeeded
+      tags: [cleanup]

@@ -1,0 +1,49 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    volumes:
+      # Core data (JSON configs, history, machines) — named volume
+      - monitoring_data:/data
+      # Override scripts and envs with host directories if desired.
+      # Set SCRIPTS_DIR / ENVS_DIR in .env or inline, e.g.:
+      #   SCRIPTS_DIR=/home/user/my-scripts
+      #   ENVS_DIR=/home/user/my-envs
+      - ${SCRIPTS_DIR:-monitoring_scripts}:/data/scripts
+      - ${ENVS_DIR:-monitoring_envs}:/data/envs
+    environment:
+      DATA_DIR: /data
+    # WireGuard requires NET_ADMIN capability and host network access to tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    # Needed for wg-quick to set up kernel routes
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+    devices:
+      - /dev/net/tun
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/machines')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  monitoring_data:
+  # Named fallback volumes — only created when SCRIPTS_DIR / ENVS_DIR are not set
+  monitoring_scripts:
+  monitoring_envs:

@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# Monitoring Tools Disable - Main Orchestration Playbook
+# =============================================================================
+# Stops and disables (start type = disabled) monitoring agent services.
+# Software is left installed - use decommission_monitoring_tools.yaml to remove.
+#
+# Sub-playbooks (must be in the same directory):
+#   disable_bmc_patrol.yaml        - Stops and disables BMC Patrol Agent
+#   disable_prometheus_agent.yaml  - Stops and disables inc_PrometheusAgent
+#
+# Usage:
+#   ansible-playbook disable_monitoring_tools.yaml
+#   ansible-playbook disable_monitoring_tools.yaml -e "disable_bmc_patrol=false"
+#   ansible-playbook disable_monitoring_tools.yaml -e "disable_prometheus=false"
+# =============================================================================
+
+- name: Monitoring Tools Disable - Scope Configuration
+  hosts: provisioning_servers
+  gather_facts: false
+
+  vars:
+    # ------------------------------------------------------------------
+    # Set to true to disable, false to skip
+    # ------------------------------------------------------------------
+    disable_bmc_patrol: true
+    disable_prometheus: true
+
+  tasks:
+    - name: Show disable scope
+      ansible.builtin.debug:
+        msg:
+          - "BMC Patrol / BMC Software disable : {{ disable_bmc_patrol }}"
+          - "Prometheus Agent disable           : {{ disable_prometheus }}"
+      run_once: true
+
+    # Push toggles as host facts so sub-playbooks can read them locally
+    # without relying on hostvars['localhost'] across play boundaries.
+    - name: Set toggle facts on all target hosts
+      ansible.builtin.set_fact:
+        disable_bmc_patrol: "{{ disable_bmc_patrol | bool }}"
+        disable_prometheus: "{{ disable_prometheus | bool }}"
+
+# NOTE: import_playbook does not support 'when' conditions in any Ansible
+# version. Skip logic is handled inside each sub-playbook via meta: end_host,
+# reading the facts set above.
+- import_playbook: disable_bmc_patrol.yaml
+- import_playbook: disable_prometheus_agent.yaml

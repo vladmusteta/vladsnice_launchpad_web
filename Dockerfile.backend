@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+
+# System deps: wireguard-tools, ansible, iproute2 (needed by wg-quick), ssh
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wireguard-tools \
+        iproute2 \
+        iptables \
+        openssh-client \
+        ansible \
+        krb5-user \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy backend source
+COPY backend/ ./backend/
+
+# Data directories (override with DATA_DIR=/data volume mount)
+ENV DATA_DIR=/data
+RUN mkdir -p /data/backend /data/scripts /data/logs /data/envs
+
+EXPOSE 8000
+
+# main.py is at /app/backend/main.py — run from /app so imports resolve
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
