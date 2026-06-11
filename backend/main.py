@@ -57,6 +57,7 @@ def _get_logs_dir(env_id: str = "") -> Path:
         return d
     return BASE_DIR / "logs"
 for _f, _d in [(MACHINES_FILE, "[]"), (ENVIRONMENTS_FILE, "[]"), (INVENTORIES_FILE, "[]"), (HISTORY_FILE, "[]")]:
+    _f.parent.mkdir(parents=True, exist_ok=True)
     if not _f.exists():
         _f.write_text(_d)
 
@@ -400,6 +401,7 @@ def delete_inventory(inv_id: str):
 
 # ─── WireGuard ────────────────────────────────────────────────────────────────
 WIREGUARD_FILE = BASE_DIR / "backend" / "wireguard.json"
+WIREGUARD_FILE.parent.mkdir(parents=True, exist_ok=True)
 if not WIREGUARD_FILE.exists():
     WIREGUARD_FILE.write_text("[]")
 
