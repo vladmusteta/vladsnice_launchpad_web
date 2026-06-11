@@ -7,17 +7,26 @@ export interface JumpHost {
   password?: string
 }
 
+// ansible: 'ssh' | 'kerberos' | 'inventory'
+// shell:   'ssh' | 'none'
+export type AnsibleAuthMode = 'ssh' | 'kerberos' | 'inventory'
+export type ShellAuthMode   = 'ssh' | 'none'
+
 export interface Machine {
   id: string
   name: string
   host: string
   port: number
   username: string
-  auth_method: 'key' | 'password' | 'kerberos' | 'winrm'
+  // legacy field kept for compat; new field is ansible_auth / shell_auth
+  auth_method: 'key' | 'password' | 'kerberos' | 'winrm' | 'none'
   key_path?: string
   password?: string
   use_ansible: boolean
   ansible_inventory?: string
+  /** Ordered list of bastion hops (first = nearest to us, last connects to target) */
+  jump_hosts?: JumpHost[]
+  /** legacy single hop kept for backward compat */
   jump_host?: JumpHost | null
   environment_id?: string | null
 }

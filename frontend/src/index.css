@@ -2,16 +2,141 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  box-sizing: border-box;
+* { box-sizing: border-box; }
+
+/* ── Themes ──────────────────────────────────────────────────────────────── */
+
+/* Default: Dark Slate (original) */
+:root, [data-theme="dark-slate"] {
+  --bg:               #0a0e1a;
+  --surface:          #0f1520;
+  --surface-elevated: #131925;
+  --border:           #1e2535;
+  --border-hover:     #2e3a52;
+  --text-primary:     #e2e8f0;
+  --text-secondary:   #94a3b8;
+  --text-muted:       #4a5568;
+  --input-bg:         #111827;
+  --accent:           #2563eb;
+  --accent-hover:     #1d4ed8;
+  --accent-text:      #60a5fa;
+  --header-bg:        #0d1220;
+  --scrollbar-thumb:  #1e2535;
 }
 
+[data-theme="dark-green"] {
+  --bg:               #050e09;
+  --surface:          #071210;
+  --surface-elevated: #0c1a14;
+  --border:           #1a2e22;
+  --border-hover:     #2a4535;
+  --text-primary:     #d1fae5;
+  --text-secondary:   #6ee7b7;
+  --text-muted:       #2d6a4f;
+  --input-bg:         #0a1510;
+  --accent:           #059669;
+  --accent-hover:     #047857;
+  --accent-text:      #34d399;
+  --header-bg:        #060f0b;
+  --scrollbar-thumb:  #1a2e22;
+}
+
+[data-theme="dark-purple"] {
+  --bg:               #0d0a1e;
+  --surface:          #130f27;
+  --surface-elevated: #18132e;
+  --border:           #2a2050;
+  --border-hover:     #3d3070;
+  --text-primary:     #ede9fe;
+  --text-secondary:   #a78bfa;
+  --text-muted:       #4c3b8a;
+  --input-bg:         #100d22;
+  --accent:           #7c3aed;
+  --accent-hover:     #6d28d9;
+  --accent-text:      #c4b5fd;
+  --header-bg:        #0e0b20;
+  --scrollbar-thumb:  #2a2050;
+}
+
+[data-theme="dark-red"] {
+  --bg:               #130a0a;
+  --surface:          #1a0e0e;
+  --surface-elevated: #201212;
+  --border:           #3a1a1a;
+  --border-hover:     #562525;
+  --text-primary:     #fee2e2;
+  --text-secondary:   #fca5a5;
+  --text-muted:       #7f1d1d;
+  --input-bg:         #160c0c;
+  --accent:           #dc2626;
+  --accent-hover:     #b91c1c;
+  --accent-text:      #f87171;
+  --header-bg:        #110909;
+  --scrollbar-thumb:  #3a1a1a;
+}
+
+[data-theme="light"] {
+  --bg:               #f1f5f9;
+  --surface:          #ffffff;
+  --surface-elevated: #f8fafc;
+  --border:           #e2e8f0;
+  --border-hover:     #cbd5e1;
+  --text-primary:     #0f172a;
+  --text-secondary:   #334155;
+  --text-muted:       #94a3b8;
+  --input-bg:         #f8fafc;
+  --accent:           #2563eb;
+  --accent-hover:     #1d4ed8;
+  --accent-text:      #2563eb;
+  --header-bg:        #ffffff;
+  --scrollbar-thumb:  #cbd5e1;
+}
+
+[data-theme="nord"] {
+  --bg:               #2e3440;
+  --surface:          #3b4252;
+  --surface-elevated: #434c5e;
+  --border:           #4c566a;
+  --border-hover:     #5e6f8a;
+  --text-primary:     #eceff4;
+  --text-secondary:   #d8dee9;
+  --text-muted:       #4c566a;
+  --input-bg:         #3b4252;
+  --accent:           #5e81ac;
+  --accent-hover:     #81a1c1;
+  --accent-text:      #88c0d0;
+  --header-bg:        #2e3440;
+  --scrollbar-thumb:  #4c566a;
+}
+
+[data-theme="dracula"] {
+  --bg:               #282a36;
+  --surface:          #21222c;
+  --surface-elevated: #2d2e3d;
+  --border:           #44475a;
+  --border-hover:     #6272a4;
+  --text-primary:     #f8f8f2;
+  --text-secondary:   #bd93f9;
+  --text-muted:       #6272a4;
+  --input-bg:         #21222c;
+  --accent:           #bd93f9;
+  --accent-hover:     #ff79c6;
+  --accent-text:      #8be9fd;
+  --header-bg:        #1e1f2b;
+  --scrollbar-thumb:  #44475a;
+}
+
+/* ── Base styles ────────────────────────────────────────────────────────── */
 body {
   margin: 0;
-  background: #0f1117;
-  color: #e2e8f0;
+  background: var(--bg);
+  color: var(--text-primary);
   font-family: 'Inter', system-ui, sans-serif;
 }
+
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
 
 /* Terminal-style log viewer */
 .log-viewer {
@@ -20,8 +145,8 @@ body {
   line-height: 1.6;
 }
 
-.log-line-error { color: #fc8181; }
-.log-line-info  { color: #63b3ed; }
-.log-line-done  { color: #68d391; }
-.log-line-sep   { color: #4a5568; }
+.log-line-error  { color: #fc8181; }
+.log-line-info   { color: #63b3ed; }
+.log-line-done   { color: #68d391; }
+.log-line-sep    { color: #4a5568; }
 .log-line-stderr { color: #f6ad55; }

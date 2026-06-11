@@ -87,12 +87,13 @@ class Machine(BaseModel):
     host: str = ""
     port: int = 22
     username: str = ""
-    auth_method: str = "key"  # key | password | kerberos | winrm
+    auth_method: str = "key"  # key | password | kerberos | winrm | inventory | none
     key_path: Optional[str] = None
     password: Optional[str] = None
     use_ansible: bool = False
     ansible_inventory: Optional[str] = None
-    jump_host: Optional[JumpHost] = None
+    jump_hosts: list[JumpHost] = []   # ordered chain; first = nearest to us
+    jump_host: Optional[JumpHost] = None   # legacy single hop kept for compat
     environment_id: Optional[str] = None
 
 
@@ -117,7 +118,8 @@ class BulkImportRequest(BaseModel):
     use_ansible: bool = False
     ansible_inventory: Optional[str] = None
     environment_id: Optional[str] = None
-    jump_host: Optional[JumpHost] = None
+    jump_hosts: list[JumpHost] = []   # ordered chain
+    jump_host: Optional[JumpHost] = None  # legacy compat
 
 
 class SaveLogsRequest(BaseModel):
@@ -701,6 +703,8 @@ def create_machine(machine: Machine):
 
 @app.post("/api/machines/bulk", status_code=201)
 def bulk_create_machines(req: BulkImportRequest):
+    # Normalise jump_hosts: prefer the new list, fall back to legacy single jump_host
+    hops = req.jump_hosts or (([req.jump_host] if req.jump_host else []))
     machines = _load_machines(); created = []
     for raw_host in req.hosts:
         host = raw_host.strip()
@@ -712,7 +716,7 @@ def bulk_create_machines(req: BulkImportRequest):
                     password=req.password, use_ansible=req.use_ansible,
                     ansible_inventory=req.ansible_inventory,
                     environment_id=req.environment_id,
-                    jump_host=req.jump_host)
+                    jump_hosts=hops, jump_host=hops[0] if len(hops) == 1 else None)
         machines.append(m.model_dump()); created.append(_strip_password(m.model_dump()))
     _save_machines(machines); return {"created": created}
 
@@ -858,10 +862,41 @@ def _build_connect_kwargs(cfg: dict) -> dict:
     return kw
 
 
+async def _open_ssh_chain(machine: dict, queue: asyncio.Queue):
+    """Open a (possibly multi-hop) asyncssh connection and return it as a context manager stack."""
+    # Normalise hops list: prefer jump_hosts list, fall back to legacy jump_host
+    hops: list[dict] = machine.get("jump_hosts") or []
+    if not hops and machine.get("jump_host") and machine["jump_host"].get("host"):
+        hops = [machine["jump_host"]]
+
+    target_kw = _build_connect_kwargs(machine)
+
+    # Build a contextlib.AsyncExitStack that opens each hop in sequence
+    import contextlib
+    stack = contextlib.AsyncExitStack()
+    tunnel_conn = None
+    for i, hop in enumerate(hops):
+        if not hop.get("host"): continue
+        hop_kw = _build_connect_kwargs(hop)
+        label = f"hop {i+1} ({hop['host']}:{hop.get('port',22)})"
+        await queue.put(f"[INFO] Connecting to {label}...\n")
+        if tunnel_conn is not None:
+            hop_kw["tunnel"] = tunnel_conn
+        tunnel_conn = await stack.enter_async_context(asyncssh.connect(**hop_kw))
+
+    if tunnel_conn is not None:
+        target_kw["tunnel"] = tunnel_conn
+    await queue.put(f"[INFO] Connecting to target {machine['host']}:{machine.get('port',22)}...\n")
+    conn = await stack.enter_async_context(asyncssh.connect(**target_kw))
+    return stack, conn
+
+
 async def _execute_script(run_id, machine, script_path, args, queue,
                            inventory=None, ephemeral_hosts=None):
     auth = machine.get("auth_method", "key")
-    if auth in ("kerberos", "winrm"):
+
+    # Local execution for kerberos / winrm / inventory-based ansible
+    if auth in ("kerberos", "winrm", "inventory"):
         try:
             await _execute_local(run_id, machine, script_path, args, queue, inventory, ephemeral_hosts)
         except asyncio.CancelledError:
@@ -872,6 +907,48 @@ async def _execute_script(run_id, machine, script_path, args, queue,
         else:
             _update_history_status(run_id, "done")
         finally:
+            active_tasks.pop(run_id, None)
+            if active_runs.get(run_id) is queue:
+                await queue.put(None)
+        return
+
+    # "none" auth — run script locally on the control node without SSH
+    if auth == "none":
+        try:
+            await queue.put(f"[INFO] Running locally (no SSH): {script_path.name} {args}\n")
+            await queue.put("-" * 60 + "\n")
+            cmd_parts: list[str]
+            if script_path.suffix in {".yml", ".yaml"}:
+                cmd_parts = ["ansible-playbook", str(script_path)]
+                if args: cmd_parts.extend(args.split())
+            elif script_path.suffix == ".py":
+                cmd_parts = ["python3", str(script_path)] + (args.split() if args else [])
+            else:
+                import stat as _stat
+                script_path.chmod(script_path.stat().st_mode | _stat.S_IXUSR)
+                cmd_parts = [str(script_path)] + (args.split() if args else [])
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_parts,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            active_processes[run_id] = proc
+            assert proc.stdout is not None
+            async for line in proc.stdout:
+                await queue.put(line.decode(errors="replace"))
+            await proc.wait()
+            await queue.put("-" * 60 + "\n")
+            await queue.put(f"[INFO] Finished with exit code: {proc.returncode}\n")
+        except asyncio.CancelledError:
+            await queue.put("[INFO] Cancelled by user.\n")
+            _update_history_status(run_id, "error")
+            raise
+        except Exception as e:
+            await queue.put(f"[ERROR] {type(e).__name__}: {e}\n")
+            _update_history_status(run_id, "error")
+        else:
+            _update_history_status(run_id, "done")
+        finally:
+            active_processes.pop(run_id, None)
             active_tasks.pop(run_id, None)
             if active_runs.get(run_id) is queue:
                 await queue.put(None)
@@ -926,20 +1003,9 @@ async def _execute_script(run_id, machine, script_path, args, queue,
                 except Exception: pass
 
     try:
-        target_kw = _build_connect_kwargs(machine)
-        jump_cfg = machine.get("jump_host") or {}
-        if jump_cfg.get("host"):
-            jump_kw = _build_connect_kwargs(jump_cfg)
-            await queue.put(f"[INFO] Connecting to jump host {jump_cfg['host']}:{jump_cfg.get('port',22)}...\n")
-            async with asyncssh.connect(**jump_kw) as jconn:
-                await queue.put(f"[INFO] Tunneling to {machine['host']}:{machine.get('port',22)}...\n")
-                target_kw["tunnel"] = jconn
-                async with asyncssh.connect(**target_kw) as conn:
-                    await _run_on_conn(conn)
-        else:
-            await queue.put(f"[INFO] Connecting to {machine['host']}:{machine.get('port',22)}...\n")
-            async with asyncssh.connect(**target_kw) as conn:
-                await _run_on_conn(conn)
+        stack, conn = await _open_ssh_chain(machine, queue)
+        async with stack:
+            await _run_on_conn(conn)
     except asyncssh.DisconnectError as e:
         await queue.put(f"[ERROR] SSH disconnected: {e}\n")
         _update_history_status(run_id, "error")
@@ -953,6 +1019,7 @@ async def _execute_script(run_id, machine, script_path, args, queue,
         _update_history_status(run_id, "done")
     finally:
         await queue.put(None)
+
 
 
 # ─── Save Logs ────────────────────────────────────────────────────────────────

@@ -96,6 +96,8 @@ export async function bulkImportMachines(payload: {
   return bulkImportMachinesWithJump(payload)
 }
 
+interface JumpHopPayload { host: string; port: number; username: string; auth_method: string; key_path?: string; password?: string }
+
 export async function bulkImportMachinesWithJump(payload: {
   hosts: string[]
   username: string
@@ -107,10 +109,10 @@ export async function bulkImportMachinesWithJump(payload: {
   environment_id?: string
   use_ansible?: boolean
   ansible_inventory?: string
-  jump_host?: {
-    host: string; port: number; username: string
-    auth_method: string; key_path?: string; password?: string
-  } | null
+  /** Ordered chain of jump hosts (first = nearest, last connects to target) */
+  jump_hosts?: JumpHopPayload[]
+  /** legacy single hop, kept for compat */
+  jump_host?: JumpHopPayload | null
 }): Promise<Machine[]> {
   const res = await fetch(`${BASE}/machines/bulk`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

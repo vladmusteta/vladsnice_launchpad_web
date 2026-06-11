@@ -113,11 +113,24 @@ function EnvPills({ environments, selected, onSelect, onChange }: {
 
 type MainTab = 'run' | 'logs' | 'history' | 'hosts' | 'vpn'
 
+const THEMES = [
+  { id: 'dark-slate',  label: '🌑 Dark Slate' },
+  { id: 'dark-green',  label: '🌿 Dark Green' },
+  { id: 'dark-purple', label: '🟣 Dark Purple' },
+  { id: 'dark-red',    label: '🔴 Dark Red' },
+  { id: 'light',       label: '☀️ Light' },
+  { id: 'nord',        label: '❄️ Nord' },
+  { id: 'dracula',     label: '🧛 Dracula' },
+] as const
+type ThemeId = typeof THEMES[number]['id']
+
 export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [machines, setMachines] = useState<Machine[]>([])
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [inventories, setInventories] = useState<AnsibleInventory[]>([])
+
+  const [theme, setTheme] = useState<ThemeId>(() => (localStorage.getItem('theme') as ThemeId) ?? 'dark-slate')
 
   const [selectedScript, setSelectedScript] = useState('')
   const [selectedMachine, setSelectedMachine] = useState('')
@@ -271,8 +284,15 @@ export default function App() {
     'px-4 py-2 text-xs font-medium transition-colors ' +
     (activeTab === t ? 'text-slate-100 border-b-2 border-emerald-400' : 'text-slate-500 hover:text-slate-300')
 
+  function applyTheme(t: ThemeId) {
+    setTheme(t)
+    localStorage.setItem('theme', t)
+  }
+
   return (
-    <div className="h-screen flex flex-col bg-slate-950 text-slate-200 overflow-hidden select-none">
+    <div className="h-screen flex flex-col overflow-hidden select-none"
+         style={{ background: 'var(--bg)', color: 'var(--text-primary)' }}
+         data-theme={theme}>
       {/* Header */}
       <header className="shrink-0 h-10 px-3 border-b border-slate-800 flex items-center gap-2">
         <div className="flex items-center gap-1.5 shrink-0">
@@ -304,6 +324,15 @@ export default function App() {
         >
           📦 Inventories
         </button>
+        {/* Theme picker */}
+        <select
+          value={theme}
+          onChange={e => applyTheme(e.target.value as ThemeId)}
+          className="shrink-0 bg-transparent border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200 text-xs rounded-lg px-2 py-1 focus:outline-none transition-colors cursor-pointer"
+          title="Theme"
+        >
+          {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
       </header>
 
       {/* ── Logs tab ── */}
