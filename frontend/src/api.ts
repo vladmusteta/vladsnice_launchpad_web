@@ -143,18 +143,39 @@ export async function saveLogs(
   return res.json() as Promise<{ path: string; filename: string }>
 }
 
-export async function startRun(
-  script: string,
-  machine_id: string,
-  args = '',
-  inventory_id = '',
-  ephemeral_hosts: string[] = [],
-  envId = '',
-  jump_hosts: { host: string; port: number; username: string; auth_method: string; key_path?: string; password?: string }[] = [],
-): Promise<string> {
+export interface RunParams {
+  script: string
+  machine_id?: string
+  args?: string
+  inventory_id?: string
+  ephemeral_hosts?: string[]
+  envId?: string
+  // Inline connection (used when machine_id is omitted)
+  host?: string
+  port?: number
+  username?: string
+  auth_method?: string
+  key_path?: string
+  password?: string
+}
+
+export async function startRun(p: RunParams): Promise<string> {
   const res = await fetch(`${BASE}/run`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ script, machine_id, args, inventory_id, ephemeral_hosts, environment_id: envId, jump_hosts }),
+    body: JSON.stringify({
+      script: p.script,
+      machine_id: p.machine_id ?? '',
+      args: p.args ?? '',
+      inventory_id: p.inventory_id ?? '',
+      ephemeral_hosts: p.ephemeral_hosts ?? [],
+      environment_id: p.envId ?? '',
+      host: p.host ?? '',
+      port: p.port ?? 22,
+      username: p.username ?? '',
+      auth_method: p.auth_method ?? 'key',
+      key_path: p.key_path ?? null,
+      password: p.password ?? null,
+    }),
   })
   if (!res.ok) {
     const body = await res.json() as { detail?: string }

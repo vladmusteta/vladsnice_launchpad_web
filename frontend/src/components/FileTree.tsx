@@ -17,10 +17,17 @@ function nodeMatchesQuery(node: TreeNode, q: string): boolean {
 }
 
 function fileIcon(name: string): string {
-  if (name.endsWith('.sh') || name.endsWith('.bash') || name.endsWith('.zsh')) return '\u{1F41A}'
-  if (name.endsWith('.py')) return '\u{1F40D}'
-  if (name.endsWith('.yml') || name.endsWith('.yaml')) return '\u{1F4CB}'
-  return '\u{1F4C4}'
+  if (name.endsWith('.sh') || name.endsWith('.bash') || name.endsWith('.zsh')) return '🐚'
+  if (name.endsWith('.py')) return '🐍'
+  if (name.endsWith('.yml') || name.endsWith('.yaml')) return '📋'
+  if (name.endsWith('.ps1')) return '🔷'
+  return '📄'
+}
+
+const CATEGORY_META: Record<string, { icon: string; color: string; bg: string }> = {
+  ansible:    { icon: '⚡', color: 'text-amber-400',  bg: 'bg-amber-500/10 border-amber-600/30' },
+  bash:       { icon: '🐚', color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-600/30' },
+  powershell: { icon: '🔷', color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-600/30' },
 }
 
 interface NodeProps {
@@ -63,6 +70,33 @@ function FTreeNode({ node, selected, onSelect, level, query, autoOpen = false }:
   }
 
   const isOpen = forceOpen || open
+  const catMeta = level === 0 ? CATEGORY_META[node.name.toLowerCase()] : undefined
+
+  if (catMeta) {
+    // Category-level folder — render as a pill header
+    return (
+      <div className="mb-1">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className={`w-full flex items-center gap-1.5 px-2 py-1 rounded border text-left transition-colors
+                     ${catMeta.bg} ${catMeta.color} hover:brightness-110`}
+        >
+          <span className="text-xs">{catMeta.icon}</span>
+          <span className="text-xs font-semibold uppercase tracking-wider">{node.name}</span>
+          <span className="ml-auto text-[10px] opacity-50">{isOpen ? '▾' : '▸'}</span>
+        </button>
+        {isOpen && (
+          <div className="mt-0.5">
+            {node.children.map((child) => (
+              <FTreeNode key={child.path || child.name} node={child} selected={selected}
+                onSelect={onSelect} level={level + 1} query={query} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div>
       <button

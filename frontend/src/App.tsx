@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Machine, TreeNode, Environment, AnsibleInventory, RunTab, JumpHost } from './types'
-import { fetchScriptsTree, fetchMachines, fetchEnvironments, fetchInventories, startRun, saveLogs, fetchScriptContent, stopRun, saveScriptContent } from './api'
+import type { TreeNode, Environment, AnsibleInventory, RunTab } from './types'
+import { fetchScriptsTree, fetchEnvironments, fetchInventories, startRun, saveLogs, fetchScriptContent, stopRun, saveScriptContent } from './api'
+import type { RunParams } from './api'
 import { createEnvironment, deleteEnvironment } from './api'
 import { useDragResize } from './hooks/useDragResize'
 import FileTree from './components/FileTree'
-import MachineSelector from './components/MachineSelector'
 import LogViewer from './components/LogViewer'
 import InventoryPanel from './components/InventoryPanel'
 import LogsBrowser from './components/LogsBrowser'
@@ -113,87 +113,186 @@ function EnvPills({ environments, selected, onSelect, onChange }: {
 
 type MainTab = 'run' | 'logs' | 'history' | 'hosts' | 'vpn'
 
-// ── Jump host chain editor (used in the run panel) ─────────────────────────
-const EMPTY_HOP: JumpHost = { host: '', port: 22, username: '', auth_method: 'key', key_path: '', password: '' }
+// ── Script-type detection from folder path ──────────────────────────────────
+type ScriptCategory = 'ansible' | 'bash' | 'powershell' | 'other'
+function scriptCategory(path: string): ScriptCategory {
+  const top = path.split('/')[0]?.toLowerCase() ?? ''
+  if (top === 'ansible')    return 'ansible'
+  if (top === 'bash')       return 'bash'
+  if (top === 'powershell') return 'powershell'
+  return 'other'
+}
 
-function RunJumpChainEditor({ hops, onChange }: {
-  hops: JumpHost[]
-  onChange: (hops: JumpHost[]) => void
-}) {
-  function addHop()                      { onChange([...hops, { ...EMPTY_HOP }]) }
-  function removeHop(i: number)          { onChange(hops.filter((_, idx) => idx !== i)) }
-  function updateHop(i: number, h: JumpHost) { onChange(hops.map((x, idx) => idx === i ? h : x)) }
-  function moveHop(from: number, to: number) {
-    const a = [...hops]; [a[from], a[to]] = [a[to], a[from]]; onChange(a)
+// ── Compact inline Target Panel ─────────────────────────────────────────────
+interface TargetPanelProps {
+  category: ScriptCategory
+  inventories: AnsibleInventory[]
+  envId: string
+  onRun: (p: Omit<RunParams, 'script' | 'args' | 'envId'>) => void
+  running: boolean
+}
+
+function TargetPanel({ category, inventories, envId, onRun, running }: TargetPanelProps) {
+  type AnsibleMode = 'ssh' | 'inventory'
+  type ShellMode   = 'ssh' | 'none'
+
+  const [ansibleMode, setAnsibleMode] = useState<AnsibleMode>('ssh')
+  const [shellMode,   setShellMode]   = useState<ShellMode>('ssh')
+  const [sshAuth,     setSshAuth]     = useState<'key' | 'password'>('key')
+  const [host,        setHost]        = useState('')
+  const [port,        setPort]        = useState(22)
+  const [username,    setUsername]    = useState('root')
+  const [keyPath,     setKeyPath]     = useState('')
+  const [password,    setPassword]    = useState('')
+  const [hostsText,   setHostsText]   = useState('')
+  const [inventoryId, setInventoryId] = useState('')
+
+  const inv = inventories.find(i => i.id === inventoryId)
+  const hostList = hostsText.split(/[\n,;]/).map(h => h.trim()).filter(Boolean)
+
+  const isAnsible = category === 'ansible'
+  const mode = isAnsible ? ansibleMode : shellMode
+  const showSsh = mode === 'ssh'
+  const showNone = !isAnsible && shellMode === 'none'
+
+  const inp = 'bg-slate-800/80 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs ' +
+    'focus:outline-none focus:ring-1 focus:ring-emerald-500 w-full placeholder-slate-600'
+  const btn = (active: boolean) =>
+    'px-3 py-1 text-xs font-medium rounded border transition-colors ' +
+    (active ? 'bg-slate-700 border-slate-500 text-slate-100' : 'border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-500')
+
+  function handleRun() {
+    if (running) return
+    const params: Omit<RunParams, 'script' | 'args' | 'envId'> = {
+      inventory_id: inventoryId || undefined,
+      ephemeral_hosts: hostList.length ? hostList : undefined,
+      host: host || undefined,
+      port,
+      username: username || undefined,
+      auth_method: showNone ? 'none' : (isAnsible && mode === 'inventory') ? 'inventory' : sshAuth,
+      key_path: sshAuth === 'key' ? (keyPath || undefined) : undefined,
+      password: sshAuth === 'password' ? (password || undefined) : undefined,
+    }
+    onRun(params)
   }
 
-  const inputCls = 'bg-slate-800 border border-slate-600 text-slate-200 rounded px-2 py-1 text-xs ' +
-    'focus:outline-none focus:ring-1 focus:ring-purple-500 w-full'
+  const canRun = showNone ||
+    (isAnsible && mode === 'inventory' && !!inventoryId) ||
+    (showSsh && !!host)
 
   return (
-    <div className="border border-slate-700 rounded-lg p-2.5 flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-400">🔗 SSH Jump Chain</span>
-        <span className="text-[10px] text-slate-500 ml-1">(hops to reach target)</span>
-        <button onClick={addHop}
-          className="text-[10px] text-slate-400 border border-slate-600 hover:border-slate-400 px-2 py-0.5 rounded transition-colors">
-          + Add hop
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="shrink-0 px-3 pt-2 pb-1.5 border-b border-slate-800 flex items-center gap-2">
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Target</span>
+        {/* Mode toggle */}
+        <div className="flex gap-1 ml-auto">
+          {isAnsible ? (
+            <>
+              <button className={btn(ansibleMode === 'ssh')}       onClick={() => setAnsibleMode('ssh')}>SSH</button>
+              <button className={btn(ansibleMode === 'inventory')} onClick={() => setAnsibleMode('inventory')}>Inventory</button>
+            </>
+          ) : (
+            <>
+              <button className={btn(shellMode === 'ssh')}  onClick={() => setShellMode('ssh')}>SSH</button>
+              <button className={btn(shellMode === 'none')} onClick={() => setShellMode('none')}>Local</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+
+        {/* Inventory picker (ansible+inventory) */}
+        {isAnsible && mode === 'inventory' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-slate-500 uppercase tracking-wider">Inventory</label>
+            <select value={inventoryId} onChange={e => setInventoryId(e.target.value)} className={inp}>
+              <option value="">— select —</option>
+              {inventories.map(i => (
+                <option key={i.id} value={i.id}>{i.is_ephemeral ? '[E] ' : ''}{i.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* SSH target host */}
+        {showSsh && (
+          <>
+            <div className="flex gap-1.5">
+              <div className="flex-1 flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Host</label>
+                <input value={host} onChange={e => setHost(e.target.value)} className={inp} placeholder="192.168.1.10" />
+              </div>
+              <div className="w-16 flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Port</label>
+                <input type="number" value={port} onChange={e => setPort(Number(e.target.value))} className={inp} />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-slate-500 uppercase tracking-wider">Username</label>
+              <input value={username} onChange={e => setUsername(e.target.value)} className={inp} placeholder="root" />
+            </div>
+            {/* Auth */}
+            <div className="flex gap-3">
+              {(['key', 'password'] as const).map(m => (
+                <label key={m} className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer">
+                  <input type="radio" checked={sshAuth === m} onChange={() => setSshAuth(m)} className="accent-emerald-500" />
+                  {m === 'key' ? 'SSH Key' : 'Password'}
+                </label>
+              ))}
+            </div>
+            {sshAuth === 'key'
+              ? <input value={keyPath} onChange={e => setKeyPath(e.target.value)} className={inp} placeholder="~/.ssh/id_rsa" />
+              : <input type="password" value={password} onChange={e => setPassword(e.target.value)} className={inp} autoComplete="new-password" placeholder="SSH password" />
+            }
+          </>
+        )}
+
+        {/* Inventory for ansible+SSH or hosts for ansible+inventory ephemeral */}
+        {isAnsible && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-slate-500 uppercase tracking-wider">
+              {mode === 'ssh' ? 'Inventory (optional)' : inv?.is_ephemeral ? 'Hosts' : 'Limit hosts (optional)'}
+            </label>
+            {mode === 'ssh' && (
+              <select value={inventoryId} onChange={e => setInventoryId(e.target.value)} className={inp}>
+                <option value="">— none / default —</option>
+                {inventories.map(i => (
+                  <option key={i.id} value={i.id}>{i.is_ephemeral ? '[E] ' : ''}{i.name}</option>
+                ))}
+              </select>
+            )}
+            {(inventoryId) && (
+              <textarea
+                value={hostsText}
+                onChange={e => setHostsText(e.target.value)}
+                rows={3}
+                placeholder={inv?.is_ephemeral ? 'server1\nserver2' : 'Leave empty = all hosts'}
+                className={inp + ' resize-y font-mono'}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Local mode info */}
+        {showNone && (
+          <p className="text-[10px] text-slate-500 italic">Runs locally on this control node (no SSH).</p>
+        )}
+      </div>
+
+      {/* Run button */}
+      <div className="shrink-0 px-3 pb-3">
+        <button
+          onClick={handleRun}
+          disabled={!canRun || running}
+          className={`w-full py-2 rounded-lg font-semibold text-sm transition-all
+            ${canRun && !running
+              ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow shadow-emerald-900/30 active:scale-[0.98]'
+              : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
+        >
+          {running ? 'Running…' : '▶ Run'}
         </button>
       </div>
-      {hops.length === 0 && (
-        <p className="text-[10px] text-slate-500 italic">No jump hosts — connects directly to target.</p>
-      )}
-      {hops.map((hop, i) => (
-        <div key={i} className="border border-slate-700/60 rounded p-2 flex flex-col gap-1.5 bg-slate-900/40">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">
-              Hop {i + 1}{i === 0 ? ' (entry)' : ''}
-            </span>
-            <div className="flex gap-1">
-              {i > 0          && <button onClick={() => moveHop(i, i - 1)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1">↑</button>}
-              {i < hops.length - 1 && <button onClick={() => moveHop(i, i + 1)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1">↓</button>}
-              <button onClick={() => removeHop(i)} className="text-[10px] text-slate-500 hover:text-red-400 px-1">✕</button>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            <div className="col-span-2 flex flex-col gap-0.5">
-              <span className="text-[10px] text-slate-500">Host</span>
-              <input value={hop.host} onChange={e => updateHop(i, { ...hop, host: e.target.value })}
-                className={inputCls} placeholder="bastion.example.com" />
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] text-slate-500">Port</span>
-              <input type="number" value={hop.port} onChange={e => updateHop(i, { ...hop, port: Number(e.target.value) })}
-                className={inputCls} />
-            </div>
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-slate-500">Username</span>
-            <input value={hop.username} onChange={e => updateHop(i, { ...hop, username: e.target.value })}
-              className={inputCls} placeholder="ec2-user" />
-          </div>
-          <div className="flex gap-3">
-            {(['key', 'password'] as const).map(m => (
-              <label key={m} className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer">
-                <input type="radio" checked={hop.auth_method === m} onChange={() => updateHop(i, { ...hop, auth_method: m })}
-                  className="accent-purple-500" />
-                {m === 'key' ? 'SSH Key' : 'Password'}
-              </label>
-            ))}
-          </div>
-          {hop.auth_method === 'key'
-            ? <input value={hop.key_path ?? ''} onChange={e => updateHop(i, { ...hop, key_path: e.target.value })}
-                className={inputCls} placeholder="~/.ssh/bastion_key" />
-            : <input type="password" value={hop.password ?? ''} onChange={e => updateHop(i, { ...hop, password: e.target.value })}
-                className={inputCls} autoComplete="new-password" placeholder="Password" />
-          }
-        </div>
-      ))}
-      {hops.length > 1 && (
-        <p className="text-[10px] text-slate-500">
-          Chain: {hops.map(h => h.host || '?').join(' → ')} → target
-        </p>
-      )}
     </div>
   )
 }
@@ -213,19 +312,14 @@ type ThemeId = typeof THEMES[number]['id']
 
 export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
-  const [machines, setMachines] = useState<Machine[]>([])
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [inventories, setInventories] = useState<AnsibleInventory[]>([])
 
   const [theme, setTheme] = useState<ThemeId>(() => (localStorage.getItem('theme') as ThemeId) ?? 'dark-slate')
 
   const [selectedScript, setSelectedScript] = useState('')
-  const [selectedMachine, setSelectedMachine] = useState('')
   const [selectedEnv, setSelectedEnv] = useState('')
-  const [selectedInventory, setSelectedInventory] = useState('')
-  const [ephemeralHosts, setEphemeralHosts] = useState('')
   const [args, setArgs] = useState('')
-  const [runJumpHops, setRunJumpHops] = useState<JumpHost[]>([])
   const [scriptParams, setScriptParams] = useState<{ prompt: string; varName: string }[]>([])
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
 
@@ -252,10 +346,10 @@ export default function App() {
 
   const load = useCallback(async (env = selectedEnv) => {
     try {
-      const [t, m, e, i] = await Promise.all([
-        fetchScriptsTree(env), fetchMachines(), fetchEnvironments(), fetchInventories(env),
+      const [t, e, i] = await Promise.all([
+        fetchScriptsTree(env), fetchEnvironments(), fetchInventories(env),
       ])
-      setTree(t); setMachines(m); setEnvironments(e); setInventories(i)
+      setTree(t); setEnvironments(e); setInventories(i)
     } catch { /* backend not up yet */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -266,7 +360,6 @@ export default function App() {
   useEffect(() => {
     void load(selectedEnv)
     setSelectedScript('')
-    setSelectedInventory('')
   }, [selectedEnv]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load script preview when a script is selected
@@ -284,41 +377,30 @@ export default function App() {
       .finally(() => setPreviewLoading(false))
   }, [selectedScript])
 
-  const selectedMachineObj = machines.find((m) => m.id === selectedMachine)
-  const selectedInventoryObj = inventories.find((i) => i.id === selectedInventory)
-  const needsInventory = selectedMachineObj?.use_ansible ?? false
-  const ephemeralHostList = ephemeralHosts.split(/[\n,;]/).map((h) => h.trim()).filter(Boolean)
-
   const activeTab_ = runTabs.find(t => t.id === activeRunTab)
+  const isRunning = runTabs.some(t => t.status === 'running')
+  const category = scriptCategory(selectedScript)
 
-  function handleRun() {
-    if (!selectedScript || !selectedMachine) return
-    const runningTabs = runTabs.filter(t => t.status === 'running')
-    if (runningTabs.length > 0) return
+  function handleRun(connParams: Omit<RunParams, 'script' | 'args' | 'envId'>) {
+    if (!selectedScript) return
+    if (isRunning) return
 
     const paramArgs = scriptParams.map(p => {
       const v = (paramValues[p.varName] ?? '').trim()
       return v.includes(' ') ? `"${v}"` : v
     }).join(' ')
     const effectiveArgs = paramArgs ? (args ? `${paramArgs} ${args}` : paramArgs) : args
-    const ephHosts = needsInventory && selectedInventory ? ephemeralHostList : []
-    const machineName = selectedMachineObj?.name ?? '?'
     const tabId = Date.now().toString()
     const newTab: RunTab = {
-      id: tabId, runId: '', script: selectedScript, machineName,
+      id: tabId, runId: '', script: selectedScript, machineName: connParams.host ?? 'local',
       lines: [], status: 'running',
       startedAt: new Date().toLocaleTimeString(),
     }
-    setRunTabs(prev => {
-      // keep last 8 tabs
-      const next = [...prev.slice(-7), newTab]
-      return next
-    })
+    setRunTabs(prev => [...prev.slice(-7), newTab])
     setActiveRunTab(tabId)
 
-    void startRun(selectedScript, selectedMachine, effectiveArgs, selectedInventory, ephHosts, selectedEnv, runJumpHops)
+    void startRun({ script: selectedScript, args: effectiveArgs, envId: selectedEnv, ...connParams })
       .then((runId) => {
-        // store the real runId on the tab for cancellation
         setRunTabs(prev => prev.map(t => t.id === tabId ? { ...t, runId } : t))
         const proto = location.protocol === 'https:' ? 'wss' : 'ws'
         const ws = new WebSocket(`${proto}://${location.host}/ws/${runId}`)
@@ -350,9 +432,6 @@ export default function App() {
         ))
       })
   }
-
-  const isRunning = runTabs.some(t => t.status === 'running')
-  const canRun = selectedScript !== '' && selectedMachine !== '' && !isRunning
 
   function closeRunTab(id: string) {
     wsRefs.current.get(id)?.close()
@@ -443,8 +522,7 @@ export default function App() {
           <AnsibleHostsPicker
             inventories={inventories}
             envId={selectedEnv}
-            onUseHosts={(hosts) => {
-              setEphemeralHosts(hosts.join('\n'))
+            onUseHosts={(_hosts) => {
               setActiveTab('run')
             }}
           />
@@ -481,93 +559,31 @@ export default function App() {
               {/* Controls row — height = controlsHeight */}
               <div style={{ height: controlsHeight }} className="flex shrink-0 overflow-hidden border-b border-slate-800">
 
-                {/* Machines panel */}
+                {/* Target panel */}
                 <div style={{ width: machinesWidth }} className="shrink-0 border-r border-slate-800 overflow-hidden flex flex-col">
-                  <MachineSelector
+                  <TargetPanel
+                    category={category}
                     inventories={inventories}
-                    onSelect={setSelectedMachine}
-                    onChanged={() => void load()}
-                    onHostsChange={(hosts) => setEphemeralHosts(hosts.join('\n'))}
-                    disabled={isRunning}
+                    envId={selectedEnv}
+                    onRun={handleRun}
+                    running={isRunning}
                   />
                 </div>
 
                 <div className={dragHandleV} onMouseDown={onMachinesDrag} />
 
-                {/* Run config — same height */}
+                {/* Script preview + args */}
                 <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-                  {/* Compact top controls — shrink-only, scrollable */}
-                  <div className="shrink-0 overflow-y-auto p-4 pb-2 flex flex-col gap-3 select-text" style={{ maxHeight: '60%' }}>
-
-                    {/* Status badges */}
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <span className={`px-2 py-1 rounded font-mono border transition-colors
-                        ${selectedScript ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-slate-800/50 text-slate-600 border-slate-700/30'}`}>
-                        {selectedScript || 'no script selected'}
-                      </span>
-                      <span className={`px-2 py-1 rounded font-mono border transition-colors
-                        ${selectedMachineObj ? 'bg-blue-900/30 text-blue-300 border-blue-700/40' : 'bg-slate-800/50 text-slate-600 border-slate-700/30'}`}>
-                        {selectedMachineObj
-                          ? `${selectedMachineObj.name}${selectedMachineObj.jump_host?.host ? ` → ${selectedMachineObj.jump_host.host}` : ''}`
-                          : 'no machine selected'}
-                      </span>
-                    </div>
-
-                    {/* Inventory selector */}
-                    {needsInventory && (
-                      <div className="flex flex-col gap-2">
-                        <label className="text-xs text-slate-400 flex items-center gap-1">
-                          <span className="text-orange-400">📦</span> Ansible Inventory
-                        </label>
-                        <div className="flex gap-2">
-                          <select
-                            value={selectedInventory}
-                            onChange={(e) => { setSelectedInventory(e.target.value) }}
-                            disabled={isRunning}
-                            className="flex-1 bg-slate-800 border border-slate-600 text-slate-200 rounded-lg
-                                       px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500
-                                       disabled:opacity-50"
-                          >
-                            <option value="">— use machine default —</option>
-                            {inventories.map((inv) => (
-                              <option key={inv.id} value={inv.id}>
-                                {inv.is_ephemeral ? '🔄 ' : '📄 '}{inv.name}
-                              </option>
-                            ))}
-                          </select>
-                          <button onClick={() => setShowInventories(true)}
-                            className="text-xs text-slate-500 hover:text-slate-300 border border-slate-700
-                                       hover:border-slate-500 rounded-lg px-2 transition-colors" title="Manage">✏️
-                          </button>
-                        </div>
-                        {selectedInventory && (
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs text-slate-400">
-                              {selectedInventoryObj?.is_ephemeral ? 'Hosts for this run' : 'Limit to hosts (optional)'}
-                              {ephemeralHostList.length > 0 && (
-                                <span className="ml-1 text-slate-500">({ephemeralHostList.length} host{ephemeralHostList.length !== 1 ? 's' : ''})</span>
-                              )}
-                            </label>
-                            <textarea
-                              value={ephemeralHosts}
-                              onChange={e => setEphemeralHosts(e.target.value)}
-                              disabled={isRunning}
-                              rows={4}
-                              placeholder={selectedInventoryObj?.is_ephemeral
-                                ? 'server1.example.com\nserver2.example.com'
-                                : 'Leave empty to run on all hosts\nserver1.example.com\nserver2.example.com'}
-                              className="bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2
-                                         text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500
-                                         resize-y placeholder-slate-600 disabled:opacity-50"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  <div className="shrink-0 p-3 pb-2 flex flex-col gap-2 select-text">
+                    {/* Status badge */}
+                    <span className={`px-2 py-1 rounded font-mono border text-xs transition-colors self-start
+                      ${selectedScript ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-slate-800/50 text-slate-600 border-slate-700/30'}`}>
+                      {selectedScript || 'no script selected'}
+                    </span>
 
                     {/* Detected script parameters */}
                     {scriptParams.length > 0 && (
-                      <div className="flex flex-col gap-2">
+                      <div className="flex flex-col gap-1.5">
                         <label className="text-xs text-slate-400">Script parameters</label>
                         {scriptParams.map(p => (
                           <div key={p.varName} className="flex flex-col gap-0.5">
@@ -575,7 +591,6 @@ export default function App() {
                             <input
                               value={paramValues[p.varName] ?? ''}
                               onChange={(e) => setParamValues(prev => ({ ...prev, [p.varName]: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === 'Enter' && canRun) handleRun() }}
                               disabled={isRunning}
                               placeholder={p.varName}
                               className="bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2
@@ -595,7 +610,6 @@ export default function App() {
                       <input
                         value={args}
                         onChange={(e) => setArgs(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' && canRun) handleRun() }}
                         disabled={isRunning}
                         placeholder="--env prod --verbose"
                         className="bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2
@@ -606,8 +620,7 @@ export default function App() {
                   </div>
 
                   {/* Script preview — flex-1, fills remaining space */}
-                  <div className="flex-1 min-h-0 flex flex-col border-t border-slate-800">
-                    <div className="shrink-0 flex items-center justify-between px-4 py-1.5 border-b border-slate-800/60 bg-slate-900/30">
+                  <div className="flex-1 min-h-0 flex flex-col border-t border-slate-800">                    <div className="shrink-0 flex items-center justify-between px-4 py-1.5 border-b border-slate-800/60 bg-slate-900/30">
                       <span className="text-xs text-slate-500 font-medium">
                         {selectedScript ? selectedScript.split('/').pop() : 'Script preview'}
                         {previewLoading && <span className="ml-2 text-slate-600">...</span>}
@@ -665,21 +678,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-
-                  {/* Run button */}
-                  <div className="shrink-0 px-4 py-2 border-t border-slate-800 flex flex-col gap-2">
-                    <RunJumpChainEditor hops={runJumpHops} onChange={setRunJumpHops} />
-                    <button
-                      onClick={handleRun}
-                      disabled={!canRun}
-                      className={`w-full py-2 rounded-lg font-semibold text-sm tracking-wide transition-all
-                                  ${canRun
-                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 active:scale-[0.98]'
-                        : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'}`}
-                    >
-                      {isRunning ? 'Running...' : 'Run Script'}
-                    </button>
-                  </div>
                 </div>
               </div>
 
@@ -725,7 +723,7 @@ export default function App() {
                           onClear={() => setRunTabs(prev => prev.map(t => t.id === activeRunTab ? { ...t, lines: [], status: 'idle' as const } : t))}
                           onSave={async () => {
                             if (!activeTab_.script) throw new Error('No script')
-                            const useAnsible = selectedMachineObj?.use_ansible ?? false
+                            const useAnsible = scriptCategory(activeTab_.script) === 'ansible'
                             await saveLogs(activeTab_.lines, activeTab_.script, useAnsible, selectedEnv)
                           }}
                           onStop={activeTab_.status === 'running' && activeTab_.runId ? async () => {

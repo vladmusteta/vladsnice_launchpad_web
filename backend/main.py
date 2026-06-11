@@ -46,6 +46,9 @@ def _get_scripts_dir(env_id: str = "") -> Path:
     if env_id:
         d = BASE_DIR / "envs" / _get_env_folder(env_id) / "scripts"
         d.mkdir(parents=True, exist_ok=True)
+        # Ensure the 3 category subdirectories always exist
+        for sub in ("ansible", "bash", "powershell"):
+            (d / sub).mkdir(exist_ok=True)
         return d
     return SCRIPTS_DIR
 
@@ -144,12 +147,18 @@ class HistoryEntry(BaseModel):
 
 class RunRequest(BaseModel):
     script: str
-    machine_id: str
+    machine_id: str = ""          # optional when inline params provided
     args: str = ""
     inventory_id: str = ""
     ephemeral_hosts: list[str] = []
     environment_id: str = ""
-    jump_hosts: list[JumpHost] = []
+    # Inline connection params (used when machine_id is empty)
+    host: str = ""
+    port: int = 22
+    username: str = ""
+    auth_method: str = "key"      # key | password | inventory | none
+    key_path: Optional[str] = None
+    password: Optional[str] = None
 
 
 # ─── Active runs ──────────────────────────────────────────────────────────────
@@ -737,25 +746,42 @@ def delete_machine(machine_id: str):
 
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
+def _script_type_from_path(script: str) -> str:
+    """Derive script type from top-level folder name."""
+    top = script.split("/")[0] if "/" in script else ""
+    return top  # "ansible" | "bash" | "powershell" | ""
+
+
 @app.post("/api/run")
 async def start_run(req: RunRequest):
-    machines = _load_machines()
-    machine = next((m for m in machines if m["id"] == req.machine_id), None)
-    if machine is None: raise HTTPException(404, "Machine not found")
     scripts_root = _get_scripts_dir(req.environment_id)
     script_path = scripts_root / req.script
     if not script_path.exists(): raise HTTPException(404, f"Script '{req.script}' not found")
     script_path.resolve().relative_to(scripts_root.resolve())
 
+    # Build machine dict — from DB or from inline params
+    if req.machine_id:
+        machines = _load_machines()
+        machine = next((m for m in machines if m["id"] == req.machine_id), None)
+        if machine is None: raise HTTPException(404, "Machine not found")
+    else:
+        # Inline / ephemeral machine — never stored in DB
+        script_type = _script_type_from_path(req.script)
+        use_ansible = (script_type == "ansible")
+        machine = {
+            "id": "", "name": req.host or "inline",
+            "host": req.host, "port": req.port,
+            "username": req.username, "auth_method": req.auth_method,
+            "key_path": req.key_path, "password": req.password,
+            "use_ansible": use_ansible,
+            "ansible_inventory": None,
+            "jump_hosts": [], "jump_host": None,
+            "environment_id": req.environment_id or None,
+        }
+
     inventory = None
     if req.inventory_id:
         inventory = next((i for i in _load_inventories() if i["id"] == req.inventory_id), None)
-
-    # Override machine's jump hosts if specified at run time
-    if req.jump_hosts:
-        machine = dict(machine)
-        machine['jump_hosts'] = [jh.model_dump() for jh in req.jump_hosts]
-        machine['jump_host'] = None
 
     run_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
