@@ -127,12 +127,11 @@ function scriptCategory(path: string): ScriptCategory {
 interface TargetPanelProps {
   category: ScriptCategory
   inventories: AnsibleInventory[]
-  envId: string
   onRun: (p: Omit<RunParams, 'script' | 'args' | 'envId'>) => void
   running: boolean
 }
 
-function TargetPanel({ category, inventories, envId, onRun, running }: TargetPanelProps) {
+function TargetPanel({ category, inventories, onRun, running }: TargetPanelProps) {
   type AnsibleMode = 'ssh' | 'inventory'
   type ShellMode   = 'ssh' | 'none'
 
@@ -564,7 +563,6 @@ export default function App() {
                   <TargetPanel
                     category={category}
                     inventories={inventories}
-                    envId={selectedEnv}
                     onRun={handleRun}
                     running={isRunning}
                   />
