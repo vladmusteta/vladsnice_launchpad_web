@@ -29,6 +29,8 @@ export interface Machine {
   /** legacy single hop kept for backward compat */
   jump_host?: JumpHost | null
   environment_id?: string | null
+  /** SSH connection timeout in seconds (default 10) */
+  timeout_s?: number
 }
 
 export interface Environment {

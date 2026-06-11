@@ -310,3 +310,94 @@ export async function generateWireGuardKeys(): Promise<{ private_key: string; pu
   }
   return res.json() as Promise<{ private_key: string; public_key: string }>
 }
+
+// ── Machine SSH test ──────────────────────────────────────────────────────────
+export async function testMachineConnection(
+  id: string,
+): Promise<{ ok: boolean | null; latency_ms?: number; error?: string; message?: string }> {
+  const res = await fetch(`${BASE}/machines/${id}/test`, { method: 'POST' })
+  if (!res.ok) throw new Error('Request failed')
+  return res.json() as Promise<{ ok: boolean | null; latency_ms?: number; error?: string; message?: string }>
+}
+
+// ── Script upload ─────────────────────────────────────────────────────────────
+export async function uploadScript(
+  file: File,
+  folder: string,
+  envId = '',
+): Promise<{ ok: boolean; path: string; name: string }> {
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('folder', folder)
+  fd.append('env_id', envId)
+  const res = await fetch(`${BASE}/scripts/upload`, { method: 'POST', body: fd })
+  if (!res.ok) {
+    const body = await res.json() as { detail?: string }
+    throw new Error(body.detail ?? 'Upload failed')
+  }
+  return res.json() as Promise<{ ok: boolean; path: string; name: string }>
+}
+
+// ── Multi-machine run ─────────────────────────────────────────────────────────
+export async function startMultiRun(payload: {
+  script: string
+  machine_ids: string[]
+  args?: string
+  environment_id?: string
+}): Promise<{ runs: { run_id: string; machine_id: string; machine_name: string }[] }> {
+  const res = await fetch(`${BASE}/run/multi`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      script: payload.script,
+      machine_ids: payload.machine_ids,
+      args: payload.args ?? '',
+      environment_id: payload.environment_id ?? '',
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json() as { detail?: string }
+    throw new Error(body.detail ?? 'Multi-run failed')
+  }
+  return res.json() as Promise<{ runs: { run_id: string; machine_id: string; machine_name: string }[] }>
+}
+
+// ── Schedules ─────────────────────────────────────────────────────────────────
+export interface ScheduleEntry {
+  id: string
+  name: string
+  script: string
+  machine_id: string
+  args: string
+  environment_id: string
+  cron_hour: number
+  cron_minute: number
+  enabled: boolean
+  last_run: string
+}
+
+export async function fetchSchedules(): Promise<ScheduleEntry[]> {
+  const res = await fetch(`${BASE}/schedules`)
+  if (!res.ok) throw new Error('Failed to fetch schedules')
+  const data = await res.json() as { schedules: ScheduleEntry[] }
+  return data.schedules
+}
+
+export async function createSchedule(s: Omit<ScheduleEntry, 'id'>): Promise<ScheduleEntry> {
+  const res = await fetch(`${BASE}/schedules`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s),
+  })
+  if (!res.ok) throw new Error('Failed to create schedule')
+  return res.json() as Promise<ScheduleEntry>
+}
+
+export async function updateSchedule(s: ScheduleEntry): Promise<ScheduleEntry> {
+  const res = await fetch(`${BASE}/schedules/${s.id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s),
+  })
+  if (!res.ok) throw new Error('Failed to update schedule')
+  return res.json() as Promise<ScheduleEntry>
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  await fetch(`${BASE}/schedules/${id}`, { method: 'DELETE' })
+}

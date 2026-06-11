@@ -29,10 +29,17 @@ export default function LogViewer({ lines, status, onClear, onSave, onStop }: Pr
   const bottomRef = useRef<HTMLDivElement>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [stopping, setStopping] = useState(false)
+  const [wrap, setWrap] = useState(true)
+  const [filter, setFilter] = useState('')
+  const [autoScroll, setAutoScroll] = useState(true)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [lines])
+    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines, autoScroll])
+
+  const visibleLines = filter
+    ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase()))
+    : lines
 
   async function handleSave() {
     if (!onSave || saveState === 'saving') return
@@ -55,7 +62,7 @@ export default function LogViewer({ lines, status, onClear, onSave, onStop }: Pr
 
   return (
     <div className="flex flex-col gap-2 flex-1 min-h-0">
-      <div className="flex items-center justify-between shrink-0 gap-2">
+      <div className="flex items-center justify-between shrink-0 gap-2 flex-wrap">
         <div className="flex items-center gap-3">
           <span className="text-sm font-medium text-slate-300 flex items-center gap-2">
             <span className="text-purple-400">▤</span> Logs
@@ -65,8 +72,36 @@ export default function LogViewer({ lines, status, onClear, onSave, onStop }: Pr
               {STATUS_LABELS[status]}
             </span>
           )}
+          {lines.length > 0 && (
+            <span className="text-[10px] text-slate-600">
+              {filter ? `${visibleLines.length}/${lines.length}` : lines.length} lines
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Live filter */}
+          <input
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') setFilter('') }}
+            placeholder="filter lines..."
+            className="w-32 bg-slate-800/60 border border-slate-700 text-slate-300 rounded px-2 py-0.5 text-xs
+                       focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-slate-600"
+          />
+          {/* Wrap toggle */}
+          <button
+            onClick={() => setWrap(w => !w)}
+            title={wrap ? 'Switch to no-wrap' : 'Switch to wrap'}
+            className={`text-xs px-2 py-0.5 rounded border transition-colors
+              ${wrap ? 'border-slate-600 text-slate-400 hover:text-slate-200' : 'border-emerald-600/50 text-emerald-400 bg-emerald-900/20'}`}
+          >{wrap ? '↔ Wrap' : '↔ NoWrap'}</button>
+          {/* Auto-scroll toggle */}
+          <button
+            onClick={() => setAutoScroll(a => !a)}
+            title={autoScroll ? 'Disable auto-scroll' : 'Enable auto-scroll'}
+            className={`text-xs px-2 py-0.5 rounded border transition-colors
+              ${autoScroll ? 'border-blue-600/50 text-blue-400 bg-blue-900/20' : 'border-slate-600 text-slate-500 hover:text-slate-300'}`}
+          >↓ Auto</button>
           {/* Stop button — only while running */}
           {status === 'running' && onStop && (
             <button
@@ -77,11 +112,6 @@ export default function LogViewer({ lines, status, onClear, onSave, onStop }: Pr
                          hover:bg-red-800/60 hover:text-red-200 transition-colors
                          disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {stopping ? (
-                <span className="animate-spin inline-block text-[10px]">...</span>
-              ) : (
-                <span>Stop</span>
-              )}
               {stopping ? 'Stopping...' : 'Stop'}
             </button>
           )}
@@ -107,14 +137,16 @@ export default function LogViewer({ lines, status, onClear, onSave, onStop }: Pr
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 bg-slate-950 border border-slate-700 rounded-xl p-4 overflow-y-auto">
-        {lines.length === 0 ? (
+      <div className="flex-1 min-h-0 bg-slate-950 border border-slate-700 rounded-xl p-4 overflow-auto">
+        {visibleLines.length === 0 ? (
           <span className="text-slate-600 italic text-xs">
-            {status === 'running' ? 'Waiting for output...' : 'Waiting for a script to run...'}
+            {lines.length === 0
+              ? (status === 'running' ? 'Waiting for output...' : 'Waiting for a script to run...')
+              : 'No lines match the filter.'}
           </span>
         ) : (
-          lines.map((line, i) => (
-            <div key={i} className={'whitespace-pre-wrap break-all ' + classifyLine(line)}>
+          visibleLines.map((line, i) => (
+            <div key={i} className={(wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre') + ' ' + classifyLine(line)}>
               {line.endsWith('\n') ? line.slice(0, -1) : line}
             </div>
           ))

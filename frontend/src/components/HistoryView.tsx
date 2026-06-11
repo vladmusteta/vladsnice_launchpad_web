@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { HistoryEntry } from '../types'
 import { fetchHistory, clearHistory } from '../api'
 
@@ -14,6 +14,7 @@ export default function HistoryView({ scriptFilter, envId = '', onReRun }: Props
   const [filterStatus, setFilterStatus] = useState<'all' | 'done' | 'error' | 'running'>('all')
   const [search, setSearch] = useState('')
   const [confirmEntry, setConfirmEntry] = useState<HistoryEntry | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -22,10 +23,28 @@ export default function HistoryView({ scriptFilter, envId = '', onReRun }: Props
 
   useEffect(() => { void load() }, [load])
 
+  // Auto-refresh every 5s so running jobs update
+  useEffect(() => {
+    intervalRef.current = setInterval(() => { void fetchHistory(envId).then(setHistory).catch(() => {}) }, 5000)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [envId])
+
   async function handleClear() {
     if (!confirm('Clear all run history?')) return
     await clearHistory(envId)
     setHistory([])
+  }
+
+  function exportCSV() {
+    const rows = [
+      ['Status', 'Script', 'Machine', 'Args', 'Time', 'Environment'],
+      ...filtered.map(h => [h.status, h.script, h.machine_name, h.args, h.timestamp, h.environment_id ?? '']),
+    ]
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'history.csv'; a.click()
+    URL.revokeObjectURL(url)
   }
 
   function fuzzy(text: string, q: string): boolean {
@@ -107,6 +126,12 @@ export default function HistoryView({ scriptFilter, envId = '', onReRun }: Props
           className="text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40">
           {loading ? '↻' : '↺'}
         </button>
+        {filtered.length > 0 && (
+          <button onClick={exportCSV}
+            className="text-xs text-slate-500 hover:text-slate-200 transition-colors border border-slate-700 hover:border-slate-500 px-2 py-0.5 rounded">
+            ↓ CSV
+          </button>
+        )}
         {history.length > 0 && (
           <button onClick={() => void handleClear()}
             className="text-xs text-slate-600 hover:text-red-400 transition-colors">

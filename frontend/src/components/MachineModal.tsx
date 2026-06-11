@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Machine, JumpHost, Environment } from '../types'
-import { createMachine, updateMachine } from '../api'
+import { createMachine, updateMachine, testMachineConnection } from '../api'
 
 interface Props {
   machine?: Machine
@@ -13,7 +13,7 @@ interface Props {
 const EMPTY: Omit<Machine, 'id'> = {
   name: '', host: '', port: 22, username: '', auth_method: 'key',
   key_path: '', password: '', use_ansible: false, ansible_inventory: '',
-  jump_host: null, environment_id: null,
+  jump_host: null, environment_id: null, timeout_s: 10,
 }
 
 const EMPTY_JUMP: JumpHost = {
@@ -51,6 +51,8 @@ export default function MachineModal({ machine, environments, defaultEnvId, onSa
   const [showJump, setShowJump] = useState(!!(machine?.jump_host?.host))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [testResult, setTestResult] = useState<{ ok: boolean | null; latency_ms?: number; error?: string; message?: string } | null>(null)
+  const [testing, setTesting] = useState(false)
 
   const set = <K extends keyof typeof form>(k: K, v: typeof form[K]) =>
     setForm((prev) => ({ ...prev, [k]: v }))
@@ -189,6 +191,17 @@ export default function MachineModal({ machine, environments, defaultEnvId, onSa
 
           {/* Jump Host */}
           <div className="border-t border-slate-700/50 pt-3">
+            <Field label="SSH Timeout (seconds)">
+              <input
+                type="number" min={1} max={120}
+                value={form.timeout_s ?? 10}
+                onChange={e => set('timeout_s', Number(e.target.value))}
+                className={inputCls}
+              />
+            </Field>
+          </div>
+
+          <div className="border-t border-slate-700/50 pt-3">
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
               <input type="checkbox" checked={showJump}
                 onChange={(e) => toggleJump(e.target.checked)} className="accent-purple-500 w-4 h-4" />
@@ -243,11 +256,38 @@ export default function MachineModal({ machine, environments, defaultEnvId, onSa
 
           {error && <p className="text-red-400 text-sm">{error}</p>}
 
+          {testResult && (
+            <div className={`px-3 py-2 rounded-lg text-xs border ${
+              testResult.ok === true ? 'bg-emerald-900/20 border-emerald-700/30 text-emerald-300' :
+              testResult.ok === false ? 'bg-red-900/20 border-red-700/30 text-red-300' :
+              'bg-slate-800 border-slate-700 text-slate-400'
+            }`}>
+              {testResult.ok === true && `✓ Connected — ${testResult.latency_ms}ms`}
+              {testResult.ok === false && `✕ ${testResult.error}`}
+              {testResult.ok === null && testResult.message}
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-1 border-t border-slate-800">
             <button type="button" onClick={onClose}
               className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors">
               Cancel
             </button>
+            {machine && (
+              <button
+                type="button"
+                disabled={testing}
+                onClick={async () => {
+                  setTesting(true); setTestResult(null)
+                  try { setTestResult(await testMachineConnection(machine.id)) }
+                  catch { setTestResult({ ok: false, error: 'Request failed' }) }
+                  finally { setTesting(false) }
+                }}
+                className="px-4 py-2 text-sm border border-slate-600 text-slate-300 hover:border-slate-400 rounded-lg disabled:opacity-50 transition-colors"
+              >
+                {testing ? 'Testing…' : '⚡ Test SSH'}
+              </button>
+            )}
             <button type="submit" disabled={saving}
               className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg
                          disabled:opacity-50 transition-colors">

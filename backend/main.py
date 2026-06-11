@@ -98,6 +98,7 @@ class Machine(BaseModel):
     jump_hosts: list[JumpHost] = []   # ordered chain; first = nearest to us
     jump_host: Optional[JumpHost] = None   # legacy single hop kept for compat
     environment_id: Optional[str] = None
+    timeout_s: int = 10
 
 
 class AnsibleInventory(BaseModel):
@@ -897,7 +898,8 @@ async def _execute_local(run_id, machine, script_path, args, queue,
 
 def _build_connect_kwargs(cfg: dict) -> dict:
     kw: dict = {"host": cfg["host"], "port": cfg.get("port", 22),
-                "username": cfg["username"], "known_hosts": None}
+                "username": cfg["username"], "known_hosts": None,
+                "connect_timeout": cfg.get("timeout_s", 10)}
     if cfg.get("auth_method") == "password" and cfg.get("password"):
         kw["password"] = cfg["password"]
     else:
@@ -1102,3 +1104,232 @@ async def websocket_logs(websocket: WebSocket, run_id: str):
         pass
     finally:
         active_runs.pop(run_id, None)
+
+
+# ─── Machine SSH test ─────────────────────────────────────────────────────────
+@app.post("/api/machines/{machine_id}/test")
+async def test_machine_connection(machine_id: str):
+    import time as _time
+    machines = _load_machines()
+    machine = next((m for m in machines if m["id"] == machine_id), None)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    auth = machine.get("auth_method", "key")
+    if auth in ("kerberos", "winrm", "inventory"):
+        return {"ok": None, "message": "Connection test not applicable for this auth method"}
+    start = _time.monotonic()
+    try:
+        kw = _build_connect_kwargs(machine)
+        async with asyncssh.connect(**kw) as conn:
+            result = await conn.run("echo ok", timeout=machine.get("timeout_s", 10))
+            _ = result
+        latency_ms = int((_time.monotonic() - start) * 1000)
+        return {"ok": True, "latency_ms": latency_ms}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ─── Script upload ────────────────────────────────────────────────────────────
+from fastapi import UploadFile, File, Form as FForm
+
+@app.post("/api/scripts/upload")
+async def upload_script(
+    env_id: str = FForm(""),
+    folder: str = FForm(""),
+    file: UploadFile = File(...),
+):
+    fname = file.filename or "script"
+    ext = Path(fname).suffix.lower()
+    if ext not in SCRIPT_EXTS:
+        raise HTTPException(400, f"Unsupported file type: {ext}")
+    scripts_root = _get_scripts_dir(env_id)
+    if folder:
+        target_dir = (scripts_root / folder).resolve()
+        if not str(target_dir).startswith(str(scripts_root.resolve())):
+            raise HTTPException(400, "Invalid folder")
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        target_dir = scripts_root
+    dest = (target_dir / Path(fname).name).resolve()
+    if not str(dest).startswith(str(scripts_root.resolve())):
+        raise HTTPException(400, "Invalid filename")
+    content = await file.read()
+    dest.write_bytes(content)
+    return {"ok": True, "path": str(dest.relative_to(scripts_root)), "name": dest.name}
+
+
+# ─── Multi-machine run ────────────────────────────────────────────────────────
+class MultiRunRequest(BaseModel):
+    script: str
+    machine_ids: list[str]
+    args: str = ""
+    inventory_id: str = ""
+    environment_id: str = ""
+
+
+@app.post("/api/run/multi")
+async def start_multi_run(req: MultiRunRequest):
+    import datetime as dt
+    scripts_root = _get_scripts_dir(req.environment_id)
+    script_path = scripts_root / req.script
+    if not script_path.exists():
+        raise HTTPException(404, f"Script '{req.script}' not found")
+
+    machines = _load_machines()
+    inventory = None
+    if req.inventory_id:
+        inventory = next((i for i in _load_inventories() if i["id"] == req.inventory_id), None)
+
+    results = []
+    for machine_id in req.machine_ids:
+        machine = next((m for m in machines if m["id"] == machine_id), None)
+        if not machine:
+            continue
+        run_id = str(uuid.uuid4())
+        queue: asyncio.Queue = asyncio.Queue()
+        active_runs[run_id] = queue
+        history = _load_history()
+        history.append({
+            "id": run_id, "script": req.script, "machine_name": machine.get("name", "?"),
+            "machine_id": machine_id, "args": req.args,
+            "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+            "status": "running",
+            "environment_id": req.environment_id or None,
+        })
+        _save_history(history)
+        task = asyncio.create_task(
+            _execute_script(run_id, machine, script_path, req.args, queue, inventory, [])
+        )
+        active_tasks[run_id] = task
+        results.append({"run_id": run_id, "machine_id": machine_id, "machine_name": machine.get("name", "?")})
+    return {"runs": results}
+
+
+# ─── Schedules ────────────────────────────────────────────────────────────────
+import datetime as _dt
+import threading as _threading
+
+SCHEDULES_FILE = BASE_DIR / "backend" / "schedules.json"
+SCHEDULES_FILE.parent.mkdir(parents=True, exist_ok=True)
+if not SCHEDULES_FILE.exists():
+    SCHEDULES_FILE.write_text("[]")
+
+_schedule_lock = _threading.Lock()
+
+
+def _load_schedules() -> list[dict]:
+    with _schedule_lock:
+        return json.loads(SCHEDULES_FILE.read_text())
+
+
+def _save_schedules(s: list[dict]):
+    with _schedule_lock:
+        SCHEDULES_FILE.write_text(json.dumps(s, indent=2))
+
+
+class ScheduleEntry(BaseModel):
+    id: str = ""
+    name: str
+    script: str
+    machine_id: str
+    args: str = ""
+    environment_id: str = ""
+    cron_hour: int = 9       # 0-23
+    cron_minute: int = 0     # 0-59
+    enabled: bool = True
+    last_run: str = ""
+
+
+@app.get("/api/schedules")
+def get_schedules():
+    return {"schedules": _load_schedules()}
+
+
+@app.post("/api/schedules", status_code=201)
+def create_schedule(entry: ScheduleEntry):
+    schedules = _load_schedules()
+    entry.id = str(uuid.uuid4())
+    schedules.append(entry.model_dump())
+    _save_schedules(schedules)
+    return entry.model_dump()
+
+
+@app.put("/api/schedules/{sched_id}")
+def update_schedule(sched_id: str, entry: ScheduleEntry):
+    schedules = _load_schedules()
+    idx = next((i for i, s in enumerate(schedules) if s["id"] == sched_id), None)
+    if idx is None:
+        raise HTTPException(404, "Schedule not found")
+    entry.id = sched_id
+    schedules[idx] = entry.model_dump()
+    _save_schedules(schedules)
+    return entry.model_dump()
+
+
+@app.delete("/api/schedules/{sched_id}", status_code=204)
+def delete_schedule(sched_id: str):
+    schedules = _load_schedules()
+    filtered = [s for s in schedules if s["id"] != sched_id]
+    if len(filtered) == len(schedules):
+        raise HTTPException(404, "Schedule not found")
+    _save_schedules(filtered)
+
+
+async def _scheduler_loop():
+    """Check every minute if any schedule should fire."""
+    import datetime as _dt2
+    while True:
+        await asyncio.sleep(30)
+        try:
+            now = _dt2.datetime.now()
+            schedules = _load_schedules()
+            for sched in schedules:
+                if not sched.get("enabled"):
+                    continue
+                if sched.get("cron_hour") != now.hour or sched.get("cron_minute") != now.minute:
+                    continue
+                # Avoid double-firing within same minute
+                last = sched.get("last_run", "")
+                if last and last.startswith(now.strftime("%Y-%m-%dT%H:%M")):
+                    continue
+                # Fire the run
+                scripts_root = _get_scripts_dir(sched.get("environment_id", ""))
+                script_path = scripts_root / sched["script"]
+                if not script_path.exists():
+                    continue
+                machines = _load_machines()
+                machine = next((m for m in machines if m["id"] == sched["machine_id"]), None)
+                if not machine:
+                    continue
+                run_id = str(uuid.uuid4())
+                queue: asyncio.Queue = asyncio.Queue()
+                active_runs[run_id] = queue
+                history = _load_history()
+                history.append({
+                    "id": run_id, "script": sched["script"],
+                    "machine_name": machine.get("name", "?"),
+                    "machine_id": sched["machine_id"], "args": sched.get("args", ""),
+                    "timestamp": now.isoformat(timespec="seconds"),
+                    "status": "running",
+                    "environment_id": sched.get("environment_id") or None,
+                })
+                _save_history(history)
+                task = asyncio.create_task(
+                    _execute_script(run_id, machine, script_path, sched.get("args", ""), queue)
+                )
+                active_tasks[run_id] = task
+                # Update last_run
+                all_s = _load_schedules()
+                for s in all_s:
+                    if s["id"] == sched["id"]:
+                        s["last_run"] = now.isoformat(timespec="seconds")
+                        break
+                _save_schedules(all_s)
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    asyncio.create_task(_scheduler_loop())
+

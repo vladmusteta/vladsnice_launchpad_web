@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { TreeNode, Environment, AnsibleInventory, RunTab } from './types'
-import { fetchScriptsTree, fetchEnvironments, fetchInventories, startRun, saveLogs, fetchScriptContent, stopRun, saveScriptContent } from './api'
+import type { TreeNode, Environment, AnsibleInventory, RunTab, Machine } from './types'
+import { fetchScriptsTree, fetchEnvironments, fetchInventories, startRun, saveLogs, fetchScriptContent, stopRun, saveScriptContent, startMultiRun, fetchMachines } from './api'
 import type { RunParams } from './api'
 import { createEnvironment, deleteEnvironment } from './api'
 import { useDragResize } from './hooks/useDragResize'
@@ -11,6 +11,10 @@ import LogsBrowser from './components/LogsBrowser'
 import HistoryView from './components/HistoryView'
 import AnsibleHostsPicker from './components/AnsibleHostsPicker'
 import WireGuardPanel from './components/WireGuardPanel'
+import MultiRunPanel from './components/MultiRunPanel'
+import SchedulesPanel from './components/SchedulesPanel'
+import MachinesPanel from './components/MachinesPanel'
+import StatsPanel from './components/StatsPanel'
 
 // ── Script param detection ─────────────────────────────────────────────────
 function detectScriptParams(content: string): { prompt: string; varName: string }[] {
@@ -22,6 +26,57 @@ function detectScriptParams(content: string): { prompt: string; varName: string 
     params.push({ prompt: m[1], varName: m[2] })
   }
   return params
+}
+
+// ── Simple line-by-line diff view ─────────────────────────────────────────
+function DiffView({ original, modified }: { original: string; modified: string }) {
+  const origLines = original.split('\n')
+  const modLines  = modified.split('\n')
+  // Very simple LCS-based diff
+  type DiffLine = { type: 'same' | 'add' | 'del'; text: string }
+  const result: DiffLine[] = []
+  let i = 0, j = 0
+  while (i < origLines.length || j < modLines.length) {
+    if (i >= origLines.length) { result.push({ type: 'add', text: modLines[j++] }); continue }
+    if (j >= modLines.length)  { result.push({ type: 'del', text: origLines[i++] }); continue }
+    if (origLines[i] === modLines[j]) { result.push({ type: 'same', text: origLines[i] }); i++; j++; continue }
+    // Look ahead up to 3 lines for a match
+    let matched = false
+    for (let d = 1; d <= 3 && !matched; d++) {
+      if (i + d < origLines.length && origLines[i + d] === modLines[j]) {
+        for (let k = 0; k < d; k++) result.push({ type: 'del', text: origLines[i++] })
+        matched = true
+      } else if (j + d < modLines.length && origLines[i] === modLines[j + d]) {
+        for (let k = 0; k < d; k++) result.push({ type: 'add', text: modLines[j++] })
+        matched = true
+      }
+    }
+    if (!matched) {
+      result.push({ type: 'del', text: origLines[i++] })
+      result.push({ type: 'add', text: modLines[j++] })
+    }
+  }
+  const hasChanges = result.some(l => l.type !== 'same')
+  return (
+    <div className="p-3 font-mono text-[11px] leading-relaxed">
+      {!hasChanges && (
+        <p className="text-slate-500 italic text-xs">No changes.</p>
+      )}
+      {result.map((line, idx) => {
+        if (line.type === 'same') return null
+        return (
+          <div key={idx} className={`flex gap-2 px-1 rounded-sm ${
+            line.type === 'add' ? 'bg-emerald-900/25 text-emerald-300' : 'bg-red-900/25 text-red-300'
+          }`}>
+            <span className="shrink-0 w-3 text-center select-none opacity-60">
+              {line.type === 'add' ? '+' : '−'}
+            </span>
+            <span className="whitespace-pre-wrap break-all">{line.text}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 // ── Inline env pill bar (lives in the header) ───────────────────────────────
@@ -111,7 +166,7 @@ function EnvPills({ environments, selected, onSelect, onChange }: {
   )
 }
 
-type MainTab = 'run' | 'logs' | 'history' | 'hosts' | 'vpn'
+type MainTab = 'run' | 'logs' | 'history' | 'hosts' | 'vpn' | 'multi' | 'schedules' | 'machines' | 'stats'
 
 // ── Script-type detection from folder path ──────────────────────────────────
 type ScriptCategory = 'ansible' | 'bash' | 'powershell' | 'other'
@@ -313,6 +368,7 @@ export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [inventories, setInventories] = useState<AnsibleInventory[]>([])
+  const [machines, setMachines] = useState<Machine[]>([])
 
   const [theme, setTheme] = useState<ThemeId>(() => (localStorage.getItem('theme') as ThemeId) ?? 'dark-slate')
 
@@ -334,10 +390,59 @@ export default function App() {
   const [editContent, setEditContent] = useState('')
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
+  const [showDiff, setShowDiff] = useState(false)
   const [showInventories, setShowInventories] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [activeTab, setActiveTab] = useState<MainTab>('run')
 
   const wsRefs = useRef<Map<string, WebSocket>>(new Map())
+  const prevTabStatusRef = useRef<Map<string, string>>(new Map())
+
+  // Request desktop notification permission once
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      void Notification.requestPermission()
+    }
+  }, [])
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName
+      if (e.key === 'Escape') { setShowHelp(false); setShowInventories(false) }
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === '?') { e.preventDefault(); setShowHelp(h => !h) }
+      if (e.key === '1') setActiveTab('run')
+      if (e.key === '2') setActiveTab('stats')
+      if (e.key === '3') setActiveTab('logs')
+      if (e.key === '4') setActiveTab('history')
+      if (e.key === '5') setActiveTab('machines')
+      if (e.key === '6') setActiveTab('multi')
+      if (e.key === '7') setActiveTab('schedules')
+      if (e.key === '8') setActiveTab('vpn')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Desktop notification when a run finishes
+  useEffect(() => {
+    const prev = prevTabStatusRef.current
+    runTabs.forEach(tab => {
+      const prevStatus = prev.get(tab.id)
+      if (prevStatus === 'running' && (tab.status === 'done' || tab.status === 'error')) {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          const name = tab.script.split('/').pop() ?? tab.script
+          const isDone = tab.status === 'done'
+          new Notification(isDone ? `✓ Done: ${name}` : `✕ Error: ${name}`, {
+            body: `Machine: ${tab.machineName}`,
+          })
+        }
+      }
+      prev.set(tab.id, tab.status)
+    })
+  }, [runTabs])
 
   const [sidebarWidth, onSidebarDrag]    = useDragResize(() => 125, 'x', 110)
   const [machinesWidth, onMachinesDrag]  = useDragResize(() => Math.max(300, Math.floor((window.innerWidth - 130) * 0.72)), 'x', 200)
@@ -345,10 +450,10 @@ export default function App() {
 
   const load = useCallback(async (env = selectedEnv) => {
     try {
-      const [t, e, i] = await Promise.all([
-        fetchScriptsTree(env), fetchEnvironments(), fetchInventories(env),
+      const [t, e, i, m] = await Promise.all([
+        fetchScriptsTree(env), fetchEnvironments(), fetchInventories(env), fetchMachines(),
       ])
-      setTree(t); setEnvironments(e); setInventories(i)
+      setTree(t); setEnvironments(e); setInventories(i); setMachines(m)
     } catch { /* backend not up yet */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -443,6 +548,53 @@ export default function App() {
       })
   }
 
+  function handleMultiRun(machineIds: string[]) {
+    if (!selectedScript || !machineIds.length) return
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    void startMultiRun({ script: selectedScript, machine_ids: machineIds, args, environment_id: selectedEnv })
+      .then(({ runs }) => {
+        const newTabs: RunTab[] = runs.map(r => ({
+          id: r.run_id,
+          runId: r.run_id,
+          script: selectedScript,
+          machineName: r.machine_name,
+          lines: [],
+          status: 'running' as const,
+          startedAt: new Date().toLocaleTimeString(),
+        }))
+        setRunTabs(prev => [...prev.slice(-(8 - newTabs.length)), ...newTabs])
+        setActiveRunTab(newTabs[0].id)
+        newTabs.forEach(tab => {
+          const ws = new WebSocket(`${proto}://${location.host}/ws/${tab.id}`)
+          wsRefs.current.set(tab.id, ws)
+          ws.onmessage = (ev) => {
+            const text = ev.data as string
+            if (text === '[DONE]\n') {
+              setRunTabs(prev => prev.map(t => t.id === tab.id ? { ...t, status: 'done' } : t))
+              ws.close(); wsRefs.current.delete(tab.id); return
+            }
+            setRunTabs(prev => prev.map(t => t.id === tab.id ? { ...t, lines: [...t.lines, text] } : t))
+          }
+          ws.onerror = () => {
+            setRunTabs(prev => prev.map(t =>
+              t.id === tab.id ? { ...t, lines: [...t.lines, '[ERROR] WebSocket failed\n'], status: 'error' } : t
+            ))
+          }
+          ws.onclose = () => {
+            setRunTabs(prev => prev.map(t =>
+              t.id === tab.id && t.status === 'running' ? { ...t, status: 'done' } : t
+            ))
+            wsRefs.current.delete(tab.id)
+          }
+        })
+        setActiveTab('run')
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : 'Unknown error'
+        console.error('Multi-run failed:', msg)
+      })
+  }
+
   function closeRunTab(id: string) {
     wsRefs.current.get(id)?.close()
     wsRefs.current.delete(id)
@@ -489,9 +641,13 @@ export default function App() {
 
         <div className="flex items-center gap-0 shrink-0">
           <button className={mainTabCls('run')} onClick={() => setActiveTab('run')}>▶ Run</button>
+          <button className={mainTabCls('stats')} onClick={() => setActiveTab('stats')}>📊 Stats</button>
           <button className={mainTabCls('logs')} onClick={() => setActiveTab('logs')}>📁 Logs</button>
           <button className={mainTabCls('history')} onClick={() => setActiveTab('history')}>📜 History</button>
           <button className={mainTabCls('hosts')} onClick={() => setActiveTab('hosts')}>🖥️ Hosts</button>
+          <button className={mainTabCls('machines')} onClick={() => setActiveTab('machines')}>🗄️ Machines</button>
+          <button className={mainTabCls('multi')} onClick={() => setActiveTab('multi')}>🚀 Multi-Run</button>
+          <button className={mainTabCls('schedules')} onClick={() => setActiveTab('schedules')}>🕐 Schedules</button>
           <button className={mainTabCls('vpn')} onClick={() => setActiveTab('vpn')}>VPN</button>
         </div>
         <button
@@ -510,7 +666,19 @@ export default function App() {
         >
           {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
+        <button
+          onClick={() => setShowHelp(h => !h)}
+          className="shrink-0 text-xs text-slate-500 hover:text-slate-200 border border-slate-700 hover:border-slate-500 rounded-lg px-2 py-1 transition-colors"
+          title="Keyboard shortcuts (?)"
+        >?</button>
       </header>
+
+      {/* ── Stats tab ── */}
+      {activeTab === 'stats' && (
+        <div className="flex-1 overflow-hidden">
+          <StatsPanel envId={selectedEnv} />
+        </div>
+      )}
 
       {/* ── Logs tab ── */}
       {activeTab === 'logs' && (
@@ -547,10 +715,39 @@ export default function App() {
         </div>
       )}
 
+      {/* ── Machines tab ── */}
+      {activeTab === 'machines' && (
+        <div className="flex-1 overflow-hidden">
+          <MachinesPanel environments={environments} envId={selectedEnv} />
+        </div>
+      )}
+
       {/* ── VPN tab ── */}
       {activeTab === 'vpn' && (
         <div className="flex-1 overflow-hidden">
           <WireGuardPanel />
+        </div>
+      )}
+
+      {/* ── Multi-Run tab ── */}
+      {activeTab === 'multi' && (
+        <div className="flex-1 overflow-hidden">
+          <MultiRunPanel
+            machines={machines.filter(m => !selectedEnv || m.environment_id === selectedEnv || !m.environment_id)}
+            selectedScript={selectedScript}
+            args={args}
+            onRun={handleMultiRun}
+          />
+        </div>
+      )}
+
+      {/* ── Schedules tab ── */}
+      {activeTab === 'schedules' && (
+        <div className="flex-1 overflow-hidden">
+          <SchedulesPanel
+            machines={machines}
+            envId={selectedEnv}
+          />
         </div>
       )}
 
@@ -567,7 +764,8 @@ export default function App() {
                 tree={tree}
                 selected={selectedScript}
                 onSelect={setSelectedScript}
-                onRefresh={() => void fetchScriptsTree().then(setTree).catch(() => {})}
+                onRefresh={() => void fetchScriptsTree(selectedEnv).then(setTree).catch(() => {})}
+                envId={selectedEnv}
               />
             </aside>
 
@@ -648,6 +846,13 @@ export default function App() {
                             <>
                               {editError && <span className="text-[10px] text-red-400">{editError}</span>}
                               <button
+                                onClick={() => setShowDiff(d => !d)}
+                                className={`text-xs px-2 py-0.5 rounded border transition-colors
+                                  ${showDiff
+                                    ? 'border-purple-500/60 text-purple-300 bg-purple-900/20'
+                                    : 'border-slate-700 text-slate-500 hover:text-slate-200 hover:border-slate-500'}`}
+                              >Diff</button>
+                              <button
                                 onClick={async () => {
                                   setEditSaving(true); setEditError('')
                                   try {
@@ -656,19 +861,19 @@ export default function App() {
                                     const detected = detectScriptParams(editContent)
                                     setScriptParams(detected)
                                     setParamValues(Object.fromEntries(detected.map(p => [p.varName, ''])))
-                                    setEditingScript(false)
+                                    setEditingScript(false); setShowDiff(false)
                                   } catch (e) { setEditError(e instanceof Error ? e.message : 'Save failed') }
                                   finally { setEditSaving(false) }
                                 }}
                                 disabled={editSaving}
                                 className="text-xs text-emerald-400 hover:text-emerald-300 border border-emerald-700/50 px-2 py-0.5 rounded disabled:opacity-50"
                               >{editSaving ? 'Saving...' : 'Save'}</button>
-                              <button onClick={() => setEditingScript(false)}
+                              <button onClick={() => { setEditingScript(false); setShowDiff(false) }}
                                 className="text-xs text-slate-500 hover:text-slate-300 px-1">Cancel</button>
                             </>
                           ) : (
                             <button
-                              onClick={() => { setEditContent(scriptPreview); setEditingScript(true); setEditError('') }}
+                              onClick={() => { setEditContent(scriptPreview); setEditingScript(true); setEditError(''); setShowDiff(false) }}
                               className="text-xs text-slate-500 hover:text-slate-200 border border-slate-700 hover:border-slate-500 px-2 py-0.5 rounded transition-colors"
                             >Edit</button>
                           )}
@@ -676,7 +881,9 @@ export default function App() {
                       )}
                     </div>
                     <div className="flex-1 min-h-0 overflow-auto">
-                      {editingScript ? (
+                      {editingScript && showDiff ? (
+                        <DiffView original={scriptPreview} modified={editContent} />
+                      ) : editingScript ? (
                         <textarea
                           value={editContent}
                           onChange={(e) => setEditContent(e.target.value)}
@@ -770,6 +977,42 @@ export default function App() {
             void fetchInventories().then(setInventories).catch(() => {})
           }}
         />
+      )}
+
+      {/* ── Keyboard shortcuts help modal ── */}
+      {showHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowHelp(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-sm mx-4 p-5"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-200">Keyboard Shortcuts</h3>
+              <button onClick={() => setShowHelp(false)} className="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+            </div>
+            <div className="flex flex-col gap-1.5 text-xs">
+              {[
+                ['?', 'Toggle this help'],
+                ['Esc', 'Close modals'],
+                ['1', 'Go to Run tab'],
+                ['2', 'Go to Stats tab'],
+                ['3', 'Go to Logs tab'],
+                ['4', 'Go to History tab'],
+                ['5', 'Go to Machines tab'],
+                ['6', 'Go to Multi-Run tab'],
+                ['7', 'Go to Schedules tab'],
+                ['8', 'Go to VPN tab'],
+                ['Ctrl+Enter', 'Run script (in Run tab)'],
+              ].map(([key, desc]) => (
+                <div key={key} className="flex items-center gap-3">
+                  <kbd className="shrink-0 px-2 py-0.5 rounded bg-slate-800 border border-slate-600 font-mono text-slate-300 text-[11px] min-w-[60px] text-center">
+                    {key}
+                  </kbd>
+                  <span className="text-slate-400">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
