@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# BMC Patrol - Enable Playbook
+# =============================================================================
+# Sets the BMC Patrol Agent service start type to Auto and starts it.
+#
+# Called by enable_monitoring_tools.yaml.
+# Can also be run standalone:
+#   ansible-playbook enable_bmc_patrol.yaml
+#   ansible-playbook enable_bmc_patrol.yaml -e "enable_bmc_patrol=false"
+# =============================================================================
+
+- name: Enable BMC Patrol Agent service
+  hosts: provisioning_servers
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Default fallback when run standalone - overridden by fact from main playbook
+    enable_bmc_patrol: true
+
+    bmc_service_name: 'BMC Patrol Agent'
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 0. Skip this host entirely if toggle is false
+    # -----------------------------------------------------------------------
+    - name: Skip BMC enable on this host (enable_bmc_patrol is false)
+      ansible.builtin.meta: end_host
+      when: not (enable_bmc_patrol | bool)
+
+    # -----------------------------------------------------------------------
+    # 1. Check if the BMC Patrol Agent service exists
+    # -----------------------------------------------------------------------
+    - name: Check if BMC Patrol Agent service exists
+      ansible.windows.win_powershell:
+        script: |
+          $svc = Get-Service -Name "{{ bmc_service_name }}" -ErrorAction SilentlyContinue
+          if ($svc) { "exists" } else { "not_found" }
+      register: bmc_svc_check
+      failed_when: false
+
+    - name: BMC Patrol Agent service not found - skipping this host
+      ansible.builtin.debug:
+        msg: "Service '{{ bmc_service_name }}' not found on {{ inventory_hostname }}. Skipping."
+      when: "'not_found' in bmc_svc_check.output"
+
+    - name: End host if BMC Patrol Agent service is not present
+      ansible.builtin.meta: end_host
+      when: "'not_found' in bmc_svc_check.output"
+
+    # -----------------------------------------------------------------------
+    # 2. Set BMC Patrol Agent service start type to Auto
+    # -----------------------------------------------------------------------
+    - name: Set BMC Patrol Agent service start type to Auto
+      ansible.windows.win_service:
+        name: "{{ bmc_service_name }}"
+        start_mode: auto
+      register: enable_result
+
+    - name: Show enable result
+      ansible.builtin.debug:
+        msg: "Start mode for '{{ bmc_service_name }}' on {{ inventory_hostname }} set to Auto."
+
+    # -----------------------------------------------------------------------
+    # 3. Start the BMC Patrol Agent service
+    # -----------------------------------------------------------------------
+    - name: Start BMC Patrol Agent service
+      ansible.windows.win_service:
+        name: "{{ bmc_service_name }}"
+        state: started
+      register: start_result
+
+    - name: Confirm BMC Patrol Agent service is running
+      ansible.builtin.debug:
+        msg: "Service '{{ bmc_service_name }}' on {{ inventory_hostname }} is now enabled and running."

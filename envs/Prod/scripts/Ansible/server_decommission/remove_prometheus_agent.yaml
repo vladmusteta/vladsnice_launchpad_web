@@ -1,0 +1,96 @@
+---
+# =============================================================================
+# Prometheus Agent - Removal Playbook
+# =============================================================================
+# Called by decommission_monitoring_tools.yaml.
+# Can also be run standalone:
+#   ansible-playbook remove_prometheus_agent.yaml
+#   ansible-playbook remove_prometheus_agent.yaml -e "remove_prometheus=false"
+# =============================================================================
+
+- name: Uninstall Prometheus Agent (inc_PrometheusAgent)
+  hosts: provisioning_servers
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Default fallback when run standalone - overridden by fact from main playbook
+    remove_prometheus: true
+
+    prometheus_service_name: 'inc_PrometheusAgent'
+    prometheus_install_path: 'D:\EnttoolsPrometheusAgent'
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 0. Skip this host entirely if toggle is false
+    # -----------------------------------------------------------------------
+    - name: Skip Prometheus removal on this host (remove_prometheus is false)
+      ansible.builtin.meta: end_host
+      when: not (remove_prometheus | bool)
+
+    # -----------------------------------------------------------------------
+    # 1. Stop and remove the Prometheus Agent service
+    # -----------------------------------------------------------------------
+    - name: Check if Prometheus Agent service exists
+      ansible.windows.win_powershell:
+        script: |
+          $svc = Get-Service -Name "{{ prometheus_service_name }}" -ErrorAction SilentlyContinue
+          if ($svc) { "exists" } else { "not_found" }
+      register: prometheus_svc_check
+      failed_when: false
+
+    - name: Stop Prometheus Agent service
+      ansible.windows.win_service:
+        name: "{{ prometheus_service_name }}"
+        state: stopped
+        force_dependent_services: true
+      register: stop_result
+      failed_when: false
+      when: "'exists' in prometheus_svc_check.output"
+
+    - name: Show service stop result
+      ansible.builtin.debug:
+        msg: "{{ stop_result | default('Service was not running or not found.') }}"
+      when: "'exists' in prometheus_svc_check.output"
+
+    - name: Remove Prometheus Agent service
+      ansible.windows.win_powershell:
+        script: |
+          sc.exe delete "{{ prometheus_service_name }}"
+      register: delete_svc_result
+      when: "'exists' in prometheus_svc_check.output"
+
+    - name: Show service deletion result
+      ansible.builtin.debug:
+        msg: "{{ delete_svc_result.output | default('(no output)') }}"
+      when: "'exists' in prometheus_svc_check.output"
+
+    - name: Warn if Prometheus Agent service was not found
+      ansible.builtin.debug:
+        msg: "Service '{{ prometheus_service_name }}' not found on {{ inventory_hostname }}. Skipping."
+      when: "'not_found' in prometheus_svc_check.output"
+
+    # -----------------------------------------------------------------------
+    # 2. Delete the Prometheus Agent installation folder
+    # -----------------------------------------------------------------------
+    - name: Check if Prometheus Agent folder exists
+      ansible.windows.win_stat:
+        path: "{{ prometheus_install_path }}"
+      register: prometheus_folder_stat
+
+    - name: Delete Prometheus Agent installation folder
+      ansible.windows.win_file:
+        path: "{{ prometheus_install_path }}"
+        state: absent
+      when: prometheus_folder_stat.stat.exists
+
+    - name: Confirm Prometheus Agent folder has been removed
+      ansible.builtin.debug:
+        msg: "Successfully deleted '{{ prometheus_install_path }}' on {{ inventory_hostname }}"
+      when: prometheus_folder_stat.stat.exists
+
+    - name: Warn if Prometheus Agent folder was not found
+      ansible.builtin.debug:
+        msg: "Folder '{{ prometheus_install_path }}' not found on {{ inventory_hostname }}. Skipping."
+      when: not prometheus_folder_stat.stat.exists

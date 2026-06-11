@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# Prometheus Agent - Enable Playbook
+# =============================================================================
+# Sets the inc_PrometheusAgent service start type to Auto and starts it.
+#
+# Called by enable_monitoring_tools.yaml.
+# Can also be run standalone:
+#   ansible-playbook enable_prometheus_agent.yaml
+#   ansible-playbook enable_prometheus_agent.yaml -e "enable_prometheus=false"
+# =============================================================================
+
+- name: Enable Prometheus Agent service (inc_PrometheusAgent)
+  hosts: provisioning_servers
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Default fallback when run standalone - overridden by fact from main playbook
+    enable_prometheus: true
+
+    prometheus_service_name: 'inc_PrometheusAgent'
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 0. Skip this host entirely if toggle is false
+    # -----------------------------------------------------------------------
+    - name: Skip Prometheus enable on this host (enable_prometheus is false)
+      ansible.builtin.meta: end_host
+      when: not (enable_prometheus | bool)
+
+    # -----------------------------------------------------------------------
+    # 1. Check if the Prometheus Agent service exists
+    # -----------------------------------------------------------------------
+    - name: Check if Prometheus Agent service exists
+      ansible.windows.win_powershell:
+        script: |
+          $svc = Get-Service -Name "{{ prometheus_service_name }}" -ErrorAction SilentlyContinue
+          if ($svc) { "exists" } else { "not_found" }
+      register: prometheus_svc_check
+      failed_when: false
+
+    - name: Prometheus Agent service not found - skipping this host
+      ansible.builtin.debug:
+        msg: "Service '{{ prometheus_service_name }}' not found on {{ inventory_hostname }}. Skipping."
+      when: "'not_found' in prometheus_svc_check.output"
+
+    - name: End host if Prometheus Agent service is not present
+      ansible.builtin.meta: end_host
+      when: "'not_found' in prometheus_svc_check.output"
+
+    # -----------------------------------------------------------------------
+    # 2. Set Prometheus Agent service start type to Auto
+    # -----------------------------------------------------------------------
+    - name: Set Prometheus Agent service start type to Auto
+      ansible.windows.win_service:
+        name: "{{ prometheus_service_name }}"
+        start_mode: auto
+      register: enable_result
+
+    - name: Show enable result
+      ansible.builtin.debug:
+        msg: "Start mode for '{{ prometheus_service_name }}' on {{ inventory_hostname }} set to Auto."
+
+    # -----------------------------------------------------------------------
+    # 3. Start the Prometheus Agent service
+    # -----------------------------------------------------------------------
+    - name: Start Prometheus Agent service
+      ansible.windows.win_service:
+        name: "{{ prometheus_service_name }}"
+        state: started
+      register: start_result
+
+    - name: Confirm Prometheus Agent service is running
+      ansible.builtin.debug:
+        msg: "Service '{{ prometheus_service_name }}' on {{ inventory_hostname }} is now enabled and running."

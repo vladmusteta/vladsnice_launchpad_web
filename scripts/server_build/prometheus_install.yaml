@@ -1,0 +1,22 @@
+- hosts: provisioning_servers
+  gather_facts: no
+  tasks:
+  - name: copy PrometheusAgent folder over
+    win_copy:
+      src: /etc/ansible/assets/PrometheusAgent.zip
+      dest: C:\PrometheusAgent.zip
+  - name: unzip PrometheusAgent folder
+    win_unzip:
+      src: C:\PrometheusAgent.zip
+      dest: C:\
+      delete_archive: yes
+  - name: run install script
+    raw: powershell.exe -ExecutionPolicy Bypass C:\PrometheusAgent\install.ps1 prod
+  - name: check status of inc_PrometheusAgent
+    win_service:
+      name: inc_PrometheusAgent
+      state: started
+  - name: remove install script
+    win_file:
+      path: C:\PrometheusAgent
+      state: absent

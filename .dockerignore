@@ -1,0 +1,31 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+backend/.venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Dev / patch scripts
+_patch*.py
+_write*.py
+
+# Runtime data (stays on host, persisted via volume)
+scripts/
+logs/
+envs/
+backend/*.json
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.md
+*.sh
+.env
+.env.*

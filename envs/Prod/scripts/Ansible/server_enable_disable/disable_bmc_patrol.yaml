@@ -1,0 +1,94 @@
+---
+# =============================================================================
+# BMC Patrol - Disable Playbook
+# =============================================================================
+# Stops the BMC Patrol Agent service and sets its start type to Disabled.
+# Software is left installed.
+#
+# Called by disable_monitoring_tools.yaml.
+# Can also be run standalone:
+#   ansible-playbook disable_bmc_patrol.yaml
+#   ansible-playbook disable_bmc_patrol.yaml -e "disable_bmc_patrol=false"
+# =============================================================================
+
+- name: Disable BMC Patrol Agent service
+  hosts: provisioning_servers
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Default fallback when run standalone - overridden by fact from main playbook
+    disable_bmc_patrol: true
+
+    bmc_service_name: 'BMC Patrol Agent'
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 0. Skip this host entirely if toggle is false
+    # -----------------------------------------------------------------------
+    - name: Skip BMC disable on this host (disable_bmc_patrol is false)
+      ansible.builtin.meta: end_host
+      when: not (disable_bmc_patrol | bool)
+
+    # -----------------------------------------------------------------------
+    # 1. Check if the BMC Patrol Agent service exists
+    # -----------------------------------------------------------------------
+    - name: Check if BMC Patrol Agent service exists
+      ansible.windows.win_powershell:
+        script: |
+          $svc = Get-Service -Name "{{ bmc_service_name }}" -ErrorAction SilentlyContinue
+          if ($svc) { "exists" } else { "not_found" }
+      register: bmc_svc_check
+      failed_when: false
+
+    - name: BMC Patrol Agent service not found - skipping this host
+      ansible.builtin.debug:
+        msg: "Service '{{ bmc_service_name }}' not found on {{ inventory_hostname }}. Skipping."
+      when: "'not_found' in bmc_svc_check.output"
+
+    - name: End host if BMC Patrol Agent service is not present
+      ansible.builtin.meta: end_host
+      when: "'not_found' in bmc_svc_check.output"
+
+    # -----------------------------------------------------------------------
+    # 2. Stop the BMC Patrol Agent service
+    # -----------------------------------------------------------------------
+    - name: Stop BMC Patrol Agent service
+      ansible.windows.win_service:
+        name: "{{ bmc_service_name }}"
+        state: stopped
+        force_dependent_services: true
+      register: stop_result
+      failed_when: false
+
+    - name: Show stop result
+      ansible.builtin.debug:
+        msg: "Stop result for '{{ bmc_service_name }}' on {{ inventory_hostname }}: {{ stop_result.state | default('(no state returned)') }}"
+
+    # -----------------------------------------------------------------------
+    # 3. Kill any remaining BMC processes
+    # -----------------------------------------------------------------------
+    - name: Kill remaining BMC processes
+      ansible.windows.win_powershell:
+        script: |
+          Stop-Process -Name "bgsagent","bgscollect","bgs_sdservice" -Force -ErrorAction SilentlyContinue
+      register: kill_result
+      failed_when: false
+
+    - name: Show kill result
+      ansible.builtin.debug:
+        msg: "{{ kill_result.output | default('(no output)') }}"
+
+    # -----------------------------------------------------------------------
+    # 4. Set BMC Patrol Agent service start type to Disabled
+    # -----------------------------------------------------------------------
+    - name: Set BMC Patrol Agent service start type to Disabled
+      ansible.windows.win_service:
+        name: "{{ bmc_service_name }}"
+        start_mode: disabled
+      register: disable_result
+
+    - name: Confirm BMC Patrol Agent service is disabled
+      ansible.builtin.debug:
+        msg: "Service '{{ bmc_service_name }}' on {{ inventory_hostname }} is now stopped and disabled."

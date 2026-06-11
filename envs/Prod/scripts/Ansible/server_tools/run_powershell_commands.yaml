@@ -1,0 +1,20 @@
+---
+- name: Run PowerShell Commands
+  hosts: provisioning_servers
+  gather_facts: false
+
+  tasks:
+    - name: "Run user PowerShell command"
+      ansible.windows.win_powershell:
+        script: "{{ ps_command }}"
+      register: result
+
+    - name: Show stdout
+      debug:
+        msg: "{{ result.output }}"
+      when: result.output | default([]) | length > 0
+
+    - name: Show errors
+      debug:
+        msg: "{{ result.error }}"
+      when: result.error | default([]) | length > 0

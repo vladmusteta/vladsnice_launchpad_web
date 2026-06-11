@@ -1,0 +1,183 @@
+---
+# =============================================================================
+# BMC Patrol / BMC Software - Removal Playbook
+# =============================================================================
+# Called by decommission_monitoring_tools.yaml.
+# Can also be run standalone:
+#   ansible-playbook remove_bmc_patrol.yaml
+#   ansible-playbook remove_bmc_patrol.yaml -e "remove_bmc_patrol=false"
+# =============================================================================
+
+- name: Uninstall BMC Patrol / BMC Software
+  hosts: provisioning_servers
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Default fallback when run standalone - overridden by fact from main playbook
+    remove_bmc_patrol: true
+
+    bmc_d_drive_path: 'D:\BMC Software'
+    bmc_c_drive_path: 'C:\Program Files\BMC Software'
+    uninstall_script_d_drive: /etc/ansible/assets/uninstall_bmc_d_drive.ps1
+    uninstall_script_c_drive: /etc/ansible/assets/uninstall_bmc_c_drive.ps1
+    bmc_remote_script_path: 'D:\uninstall_bmc.ps1'
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # 0. Skip this host entirely if toggle is false
+    # -----------------------------------------------------------------------
+    - name: Skip BMC removal on this host (remove_bmc_patrol is false)
+      ansible.builtin.meta: end_host
+      when: not (remove_bmc_patrol | bool)
+
+    # -----------------------------------------------------------------------
+    # 1. Detect BMC installation location
+    # -----------------------------------------------------------------------
+    - name: Check if BMC is installed on D drive
+      ansible.windows.win_stat:
+        path: "{{ bmc_d_drive_path }}"
+      register: bmc_d_drive_stat
+
+    - name: Check if BMC is installed on C drive
+      ansible.windows.win_stat:
+        path: "{{ bmc_c_drive_path }}"
+      register: bmc_c_drive_stat
+
+    - name: BMC Software not found on either drive - skipping this host
+      ansible.builtin.debug:
+        msg: "BMC Software not found on {{ inventory_hostname }}. Nothing to uninstall."
+      when:
+        - not bmc_d_drive_stat.stat.exists
+        - not bmc_c_drive_stat.stat.exists
+
+    - name: End host if BMC Software is not installed
+      ansible.builtin.meta: end_host
+      when:
+        - not bmc_d_drive_stat.stat.exists
+        - not bmc_c_drive_stat.stat.exists
+
+    - name: Set fact - BMC found on D drive
+      ansible.builtin.set_fact:
+        bmc_install_drive: "D"
+        bmc_uninstall_script_src: "{{ uninstall_script_d_drive }}"
+      when: bmc_d_drive_stat.stat.exists
+
+    - name: Set fact - BMC found on C drive (D drive not present)
+      ansible.builtin.set_fact:
+        bmc_install_drive: "C"
+        bmc_uninstall_script_src: "{{ uninstall_script_c_drive }}"
+      when:
+        - not bmc_d_drive_stat.stat.exists
+        - bmc_c_drive_stat.stat.exists
+
+    - name: Show detected BMC installation drive
+      ansible.builtin.debug:
+        msg: "BMC Software detected on {{ bmc_install_drive }} drive. Using script: {{ bmc_uninstall_script_src }}"
+
+    # -----------------------------------------------------------------------
+    # 2. Stop BMC services and processes
+    # -----------------------------------------------------------------------
+    - name: Stop BMC Patrol Agent service and kill BMC processes
+      ansible.windows.win_powershell:
+        script: |
+          Stop-Service -Name "BMC Patrol Agent" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "bgsagent","bgscollect","bgs_sdservice" -Force -ErrorAction SilentlyContinue
+      register: stop_result
+      failed_when: false
+
+    - name: Show stop output
+      ansible.builtin.debug:
+        msg: "{{ stop_result.output | default('(no output)') }}"
+
+    # -----------------------------------------------------------------------
+    # 3. Copy the appropriate uninstall script to the remote host
+    # -----------------------------------------------------------------------
+    - name: Copy uninstall script to remote host
+      ansible.windows.win_copy:
+        src: "{{ bmc_uninstall_script_src }}"
+        dest: "{{ bmc_remote_script_path }}"
+
+    # -----------------------------------------------------------------------
+    # 4. Backup BMC logs before uninstall
+    # -----------------------------------------------------------------------
+    - name: Check if BMC log folder exists
+      ansible.windows.win_stat:
+        path: 'D:\BMC Software\Patrol3\log'
+      register: bmc_log_stat
+
+    - name: Create log backup destination folder
+      ansible.windows.win_file:
+        path: 'D:\BMCLogsBackup'
+        state: directory
+      when: bmc_log_stat.stat.exists
+
+    - name: Copy BMC logs to backup folder
+      ansible.windows.win_powershell:
+        script: |
+          Copy-Item -Path 'D:\BMC Software\Patrol3\log\*' `
+            -Destination 'D:\BMCLogsBackup' `
+            -Recurse -Force
+      register: log_backup_result
+      when: bmc_log_stat.stat.exists
+
+    - name: Show log backup result
+      ansible.builtin.debug:
+        msg: "{{ log_backup_result.output | default('(no output - logs backed up to D:/BMCLogsBackup)') }}"
+      when: bmc_log_stat.stat.exists
+
+    - name: Warn if BMC log folder was not found
+      ansible.builtin.debug:
+        msg: "BMC log folder not found on {{ inventory_hostname }}, skipping backup."
+      when: not bmc_log_stat.stat.exists
+
+    # -----------------------------------------------------------------------
+    # 5. Execute the uninstall script
+    # -----------------------------------------------------------------------
+    - name: Execute BMC uninstall script
+      ansible.windows.win_powershell:
+        script: |
+          & "{{ bmc_remote_script_path }}"
+      register: uninstall_result
+
+    - name: Show uninstall output
+      ansible.builtin.debug:
+        msg: "{{ uninstall_result.output | default('(no output)') }}"
+
+    # -----------------------------------------------------------------------
+    # 6. Take ownership of the BMC Software installation folder
+    # -----------------------------------------------------------------------
+    - name: Set fact - BMC installation folder to delete
+      ansible.builtin.set_fact:
+        bmc_install_path: >-
+          {{ bmc_d_drive_path if bmc_install_drive == 'D' else bmc_c_drive_path }}
+
+    - name: Take ownership of BMC installation folder and subfolders
+      ansible.windows.win_powershell:
+        script: |
+          $path = "{{ bmc_install_path }}"
+          takeown /F "$path" /R /D Y
+          icacls "$path" /grant Administrators:F /T /C /Q
+      register: ownership_result
+      failed_when: false
+
+    # -----------------------------------------------------------------------
+    # 7. Delete the BMC Software installation folder
+    # -----------------------------------------------------------------------
+    - name: Delete BMC Software installation folder
+      ansible.windows.win_file:
+        path: "{{ bmc_install_path }}"
+        state: absent
+
+    - name: Confirm BMC Software folder has been removed
+      ansible.builtin.debug:
+        msg: "Successfully deleted '{{ bmc_install_path }}' on {{ inventory_hostname }}"
+
+    # -----------------------------------------------------------------------
+    # 8. Clean up the temporary script file
+    # -----------------------------------------------------------------------
+    - name: Remove temporary uninstall script from remote host
+      ansible.windows.win_file:
+        path: "{{ bmc_remote_script_path }}"
+        state: absent

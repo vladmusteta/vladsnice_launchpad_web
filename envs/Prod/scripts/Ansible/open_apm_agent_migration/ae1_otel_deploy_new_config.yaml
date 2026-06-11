@@ -1,0 +1,34 @@
+---
+- name: Configure Windows Node
+  hosts: provisioning_servers
+  tasks:
+    - name: Check server_type
+      win_shell: |
+        $hostname = $env:COMPUTERNAME
+        $server_type = "none"
+        if ($hostname -match "cor|web|api|ivr") {
+          $server_type = $matches[0].ToLower().Trim()
+        }
+        $server_type
+      register: server_type_result
+
+    - name: Set server_type Ansible variable
+      set_fact:
+        server_type: "{{ server_type_result.stdout | regex_replace('[^A-Za-z0-9]', '') }}"
+
+    - name: Stop playbook if server_type is none
+      fail:
+        msg: "Server type is 'none', stopping playbook."
+      when: server_type == "none"
+
+    - name: Transfer agent.yml file
+      win_copy:
+        src: "/etc/ansible/assets/openapm_assets/agent_configs/ae1/{{ server_type }}/agent_config.yaml"
+        dest: "C:\\ProgramData\\Splunk\\OpenTelemetry Collector\\agent_config.yaml"
+        force: yes
+
+    - name: Restart splunk-otel-collector service
+      win_service:
+        name: splunk-otel-collector
+        state: restarted
+
